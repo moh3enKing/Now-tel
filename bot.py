@@ -1,5 +1,5 @@
 # ============================================================
-# ربات دانلود ۳۲۰k اسپاتیفای - نسخه بدون نیاز به اکانت / لاگین
+# ربات دانلود ۳۲۰k اسپاتیفای - همراه با احراز هویت sp_dc
 # ============================================================
 
 import os
@@ -28,8 +28,9 @@ from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, ID3NoHeaderError
 # تنظیمات اصلی
 # ============================================================
 TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
+SP_DC = "AQCYW2uvKiFwGoA8vfp71CFFAdz2-dSATT2XjXR1WsOfE5Jp1nxJw2CB3cvAUCo4LTyJPVaUNGNCC0jLrQ-sX1YHmJ2t5IXBcA11q6uVm_mKjZ_WgCRAwf93Q4NBtc8fL-188P3Q0GGOnzafelQhEeVbqbulm1_tlcjZ-ba37JIUYT1Orp5vyDeNVljnAPEHMZc2GtlYXzdZmxF6xBs"
 DATA_FILE = "audio_bot_db.json"
-VERSION = "11.0-NoAuthHQ"
+VERSION = "12.0-AuthHQ"
 
 # ============================================================
 # تنظیم سیستم لاگ
@@ -39,7 +40,7 @@ logging.basicConfig(
     format="%(asctime)s - [%(levelname)s] - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("NoAuthAudioBot")
+logger = logging.getLogger("AuthAudioBot")
 
 # ============================================================
 # سرور Flask جهت نگهداشت آنلاین در Render
@@ -47,7 +48,7 @@ logger = logging.getLogger("NoAuthAudioBot")
 app = Flask('')
 @app.route('/')
 def home():
-    return f"NoAuth Spotify Audio Bot V:{VERSION} is Online!"
+    return f"Spotify Audio Bot V:{VERSION} is Online!"
 
 def run_web():
     port = int(os.environ.get('PORT', 8080))
@@ -96,6 +97,22 @@ def get_user(uid):
     return db["users"][uid]
 
 # ============================================================
+# دریافت توکن دسترسی با استفاده از sp_dc
+# ============================================================
+def get_spotify_access_token():
+    try:
+        url = "https://open.spotify.com/get_access_token"
+        cookies = {"sp_dc": SP_DC}
+        resp = requests.get(url, cookies=cookies, headers=HEADERS, timeout=10)
+        if resp.status_code == 200:
+            token = resp.json().get("accessToken")
+            if token:
+                return token
+    except Exception as e:
+        logger.warning(f"[LOG TERMINAL] ⚠️ خطا در دریافت Access Token با sp_dc: {e}")
+    return None
+
+# ============================================================
 # استخراج متادیتای اسپاتیفای (نام خواننده، عنوان آهنگ و کاور HD)
 # ============================================================
 def get_spotify_track_meta(url):
@@ -105,9 +122,28 @@ def get_spotify_track_meta(url):
     track_id = m.group(1) if m else None
     clean_url = f"https://open.spotify.com/track/{track_id}" if track_id else url
 
-    title, artist, cover = "", "", ""
+    # ۱. تلاش برای دریافت از API رسمی اسپاتیفای با توکن sp_dc
+    if track_id:
+        token = get_spotify_access_token()
+        if token:
+            try:
+                api_url = f"https://api.spotify.com/v1/tracks/{track_id}"
+                auth_headers = {**HEADERS, "Authorization": f"Bearer {token}"}
+                res = requests.get(api_url, headers=auth_headers, timeout=10)
+                if res.status_code == 200:
+                    data = res.json()
+                    title = data.get("name", "")
+                    artists = ", ".join([a.get("name", "") for a in data.get("artists", [])])
+                    images = data.get("album", {}).get("images", [])
+                    cover = images[0]["url"] if images else ""
+                    
+                    logger.info(f"[LOG TERMINAL] ✅ استخراج متادیتا از API رسمی اسپاتیفای: خواننده='{artists}', آهنگ='{title}'")
+                    return {"track_id": track_id, "title": title, "artist": artists, "cover": cover}
+            except Exception as e:
+                logger.warning(f"[LOG TERMINAL] ⚠️ استفاده از Spotify Web API ناموفق بود: {e}")
 
-    # اسکرپ مستقیم متاتگ‌های اسپاتیفای
+    # ۲. Fallback: اسکرپ مستقیم متاتگ‌های اسپاتیفای
+    title, artist, cover = "", "", ""
     try:
         req = urllib.request.Request(clean_url, headers=HEADERS)
         ctx = ssl.create_default_context()
@@ -133,12 +169,12 @@ def get_spotify_track_meta(url):
                         artist = parts[1]
 
             if title and artist and artist.lower() not in ["song", "single", "album"]:
-                logger.info(f"[LOG TERMINAL] ✅ استخراج متادیتا موفق: خواننده='{artist}', آهنگ='{title}'")
+                logger.info(f"[LOG TERMINAL] ✅ HTML Scraping موفق: خواننده='{artist}', آهنگ='{title}'")
                 return {"track_id": track_id, "title": title, "artist": artist, "cover": cover}
     except Exception as e:
         logger.warning(f"[LOG TERMINAL] ⚠️ HTML Scraping ناموفق: {e}")
 
-    # Fallback به oEmbed
+    # ۳. Fallback به oEmbed
     try:
         oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
         req = urllib.request.Request(oembed_url, headers=HEADERS)
@@ -204,7 +240,7 @@ def embed_cover_and_tags(mp3_path, title, artist, cover_url):
         logger.error(f"[LOG TERMINAL] ⚠️ خطا در حک کاور روی فایل: {e}")
 
 # ============================================================
-# استخراج سریع استریم صوتی ۳۲۰k بدون نیاز به اکانت
+# استخراج سریع استریم صوتی ۳۲۰k
 # ============================================================
 def download_audio_stream_320k(artist, title, output_path):
     logger.info(f"[LOG TERMINAL] 🟢 شروع دانلود استریم ۳۲۰k برای: '{artist} - {title}'")
@@ -268,7 +304,7 @@ def send_welcome(message):
     text = (
         f"سلام <b>{message.from_user.first_name}</b> عزیز 👋\n\n"
         "🟢 <b>ربات دانلود موزیک اسپاتیفای با کیفیت ۳۲۰k</b>\n\n"
-        "بدون نیاز به لاگین یا حساب کاربری، لینک اسپاتیفای را بفرستید تا فایل ۳۲۰k همراه با کاور HD اصلی ارسال شود.\n\n"
+        "لینک اسپاتیفای را بفرستید تا فایل ۳۲۰k همراه با کاور HD اصلی ارسال شود.\n\n"
         "🔗 <b>لطفاً لینک آهنگ اسپاتیفای را ارسال کنید:</b>"
     )
     bot.send_message(message.chat.id, text)
@@ -306,7 +342,7 @@ def handle_spotify_link(message):
 
     filename = f"spotify_{chat_id}_{int(time.time())}.mp3"
 
-    # ۲. دانلود استریم ۳۲۰k بدون نیاز به لاگین
+    # ۲. دانلود استریم ۳۲۰k
     success = download_audio_stream_320k(display_artist, display_title, filename)
 
     if not success or not os.path.exists(filename) or os.path.getsize(filename) < 100000:
@@ -365,7 +401,7 @@ def handle_spotify_link(message):
 # اجرای ربات با مدیریت ۴۰۹
 # ============================================================
 if __name__ == "__main__":
-    logger.info(f"NoAuth Spotify Bot V{VERSION} Started!")
+    logger.info(f"Spotify Bot V{VERSION} Started!")
     
     try:
         bot.remove_webhook()
@@ -382,4 +418,3 @@ if __name__ == "__main__":
                 time.sleep(2)
         except Exception as e:
             time.sleep(2)
-
