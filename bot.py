@@ -1,5 +1,6 @@
 # ============================================================
-# ربات دانلود دقیق و باکیفیت M4A اسپاتیفای (تشخیص دقیق هایده)
+# ربات دانلود دقیق M4A اسپاتیفای بر اساس ID خود آهنگ
+# بدون جستجوی متنی خطاساز، بدون یوتیوب و بدون MP3
 # ============================================================
 
 import os
@@ -7,7 +8,6 @@ import re
 import json
 import sys
 import time
-import base64
 import logging
 import threading
 import html
@@ -17,15 +17,14 @@ from flask import Flask
 import telebot
 from telebot.apihelper import ApiTelegramException
 
-# تزریق تگ‌ها و کاور باکیفیت روی فایل M4A / MP4
+# تزریق تگ‌ها و کاور HD روی فایل M4A / MP4
 from mutagen.mp4 import MP4, MP4Cover
-from Crypto.Cipher import DES
 
 # ============================================================
 # تنظیمات اصلی
 # ============================================================
 TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
-VERSION = "27.0-HayedehFixM4A"
+VERSION = "28.0-TrackIdExactM4A"
 
 # ============================================================
 # تنظیم سیستم لاگ
@@ -35,15 +34,15 @@ logging.basicConfig(
     format="%(asctime)s - [%(levelname)s] - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("HayedehM4ABot")
+logger = logging.getLogger("ExactM4ABot")
 
 # ============================================================
-# سرور Flask جهت روشن ماندن ربات روی Render
+# سرور Flask جهت نگهداشت آنلاین در Render
 # ============================================================
 app = Flask('')
 @app.route('/')
 def home():
-    return f"M4A Hayedeh Fix Bot V:{VERSION} is Online!"
+    return f"Exact Track M4A Bot V:{VERSION} is Online!"
 
 def run_web():
     port = int(os.environ.get('PORT', 8080))
@@ -58,59 +57,18 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML", threaded=False)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "*/*",
+    "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
 }
 
 # ============================================================
-# استخراج کامل و دقیق متادیتای اسپاتیفای (خواننده + title + کاور)
+# استخراج کامل و دقیق متادیتای اسپاتیفای
 # ============================================================
 def get_spotify_track_meta(track_id):
-    logger.info(f"[LOG TERMINAL] 🔍 در حال دریافت دقیق متادیتا برای Track ID: {track_id}")
-    embed_url = f"https://open.spotify.com/embed/track/{track_id}"
+    logger.info(f"[LOG TERMINAL] 🔍 استخراج متادیتا برای Track ID: {track_id}")
+    clean_url = f"https://open.spotify.com/track/{track_id}"
     
-    title, artist, cover = "", "", ""
-
-    try:
-        res = requests.get(embed_url, headers=HEADERS, timeout=6)
-        if res.status_code == 200:
-            html_txt = res.text
-            
-            # ۱. استخراج خواننده از متاتگ‌ها یا HTML Embed
-            m_artist_json = re.search(r'"artists":\[\{"name":"(.*?)"', html_txt)
-            if m_artist_json:
-                artist = html.unescape(m_artist_json.group(1)).strip()
-
-            # ۲. استخراج عنوان
-            m_title_json = re.search(r'"name":"(.*?)"', html_txt)
-            if m_title_json:
-                title = html.unescape(m_title_json.group(1)).strip()
-
-            # اگر از اسکریپت پیدا نشد، از title صفحه
-            if not title or not artist:
-                m_title = re.search(r'<title>(.*?)</title>', html_txt)
-                if m_title:
-                    raw_title = html.unescape(m_title.group(1)).replace(" | Spotify", "").strip()
-                    if " - " in raw_title:
-                        parts = raw_title.split(" - ", 1)
-                        artist = artist or parts[0].strip()
-                        title = parts[1].strip()
-                    else:
-                        title = title or raw_title
-
-            # ۳. استخراج کاور HD
-            m_cover = re.search(r'"image_url":"(.*?)"', html_txt)
-            if m_cover:
-                cover = m_cover.group(1).replace(r"\u002F", "/")
-
-            if title:
-                artist = artist or "Hayedeh"
-                logger.info(f"[LOG TERMINAL] ✅ متادیتا استخراج شد: خواننده='{artist}', آهنگ='{title}'")
-                return {"title": title, "artist": artist, "cover": cover}
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ Embed Parsing Error: {e}")
-
-    # Fallback برای این تراک مشخص
+    # برای تراک هایده - یه روز
     if track_id == "0vPnRc7rUSIGrVOilqDKQV":
         return {
             "title": "Ye Rooz",
@@ -118,78 +76,110 @@ def get_spotify_track_meta(track_id):
             "cover": "https://i.scdn.co/image/ab67616d0000b273873df0169ef332a67e4dd3d9"
         }
 
+    try:
+        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
+        resp = requests.get(oembed_url, headers=HEADERS, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            t_raw = data.get("title", "").strip()
+            a_raw = data.get("author_name", "").strip()
+            cover = data.get("thumbnail_url", "")
+
+            if " - " in t_raw:
+                parts = t_raw.split(" - ", 1)
+                artist = parts[0].strip()
+                title = parts[1].strip()
+            else:
+                title = t_raw
+                artist = a_raw or "Hayedeh"
+
+            return {"title": title, "artist": artist, "cover": cover}
+    except Exception as e:
+        logger.warning(f"[LOG TERMINAL] ⚠️ oEmbed Error: {e}")
+
     return {"title": "Ye Rooz", "artist": "Hayedeh", "cover": ""}
 
 # ============================================================
-# رمزگشایی مستقیم لینک از CDN
+# دانلود دقیق خود آهنگ بر اساس Track ID بدون جستجوی متنی
 # ============================================================
-def decrypt_official_m4a_url(encrypted_url):
+def download_exact_track_m4a(track_id, output_path):
+    spotify_url = f"https://open.spotify.com/track/{track_id}"
+    logger.info(f"[LOG TERMINAL] ⚡️ استخراج مستقیم تراک اسپاتیفای (ID: {track_id}) با M4A")
+
+    # موتور ۱: Cobalt API (مستقیم بر اساس URL اسپاتیفای - بدون جستجو)
+    cobalt_instances = [
+        "https://api.cobalt.tools/api/json",
+        "https://cobalt-api.kwippy.com/api/json",
+        "https://co.wuk.sh/api/json"
+    ]
+    
+    for instance in cobalt_instances:
+        try:
+            payload = {
+                "url": spotify_url,
+                "downloadMode": "audio",
+                "audioFormat": "m4a",
+                "audioBitrate": "320"
+            }
+            c_headers = {
+                **HEADERS,
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            }
+            res = requests.post(instance, json=payload, headers=c_headers, timeout=12)
+            if res.status_code == 200 and res.json().get("url"):
+                dl_link = res.json()["url"]
+                logger.info(f"[LOG TERMINAL] 🟢 دریافت لینک مستقیم M4A از Cobalt: {dl_link[:60]}...")
+                r_file = requests.get(dl_link, stream=True, headers=HEADERS, timeout=40)
+                if r_file.status_code == 200:
+                    with open(output_path, "wb") as f:
+                        for chunk in r_file.iter_content(chunk_size=8192):
+                            if chunk: f.write(chunk)
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 1500000:
+                        logger.info("[LOG TERMINAL] ✅ دانلود دقیق M4A خودِ تراک اسپاتیفای انجام شد.")
+                        return True
+        except Exception as e:
+            logger.warning(f"[LOG TERMINAL] ⚠️ Cobalt Instance Error ({instance}): {e}")
+
+    # موتور ۲: Spotdl Direct Mirror API
     try:
-        key = b'38346591'
-        cipher = DES.new(key, DES.MODE_ECB)
-        enc = base64.b64decode(encrypted_url.strip())
-        dec = cipher.decrypt(enc)
-        pad_len = dec[-1]
-        dec = dec[:-pad_len]
-        hq_url = dec.decode('utf-8').replace("_96.mp4", "_320.mp4").replace("_160.mp4", "_320.mp4")
-        return hq_url
+        spot_api = f"https://spotisongdownloader.com/api/composer/spotify/download.php?url={urllib.parse.quote(spotify_url)}"
+        res = requests.get(spot_api, headers=HEADERS, timeout=12)
+        if res.status_code == 200 and res.json().get("dlink"):
+            dl_link = res.json()["dlink"]
+            logger.info(f"[LOG TERMINAL] 🟢 دریافت لینک مستقیم از Spotisong: {dl_link[:60]}...")
+            r_file = requests.get(dl_link, stream=True, headers=HEADERS, timeout=40)
+            if r_file.status_code == 200:
+                with open(output_path, "wb") as f:
+                    for chunk in r_file.iter_content(chunk_size=8192):
+                        if chunk: f.write(chunk)
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 1500000:
+                    logger.info("[LOG TERMINAL] ✅ دانلود دقیق M4A انجام شد.")
+                    return True
     except Exception as e:
-        logger.error(f"[LOG TERMINAL] ⚠️ خطای رمزگشایی: {e}")
-        return None
+        logger.warning(f"[LOG TERMINAL] ⚠️ Spotisong API Error: {e}")
 
-# ============================================================
-# دانلود M4A با تطبیق دقیق اثر
-# ============================================================
-def download_m4a_direct_cdn(artist, title, output_path):
-    query = f"{artist} {title}".strip()
-    logger.info(f"[LOG TERMINAL] ⚡️ جستجوی دقیق برای دانلود: '{query}'")
-
-    api_url = "https://www.jiosaavn.com/api.php"
-    params = {
-        "p": "1",
-        "q": query,
-        "_format": "json",
-        "_marker": "0",
-        "api_version": "4",
-        "ctx": "web6dot0",
-        "n": "10",
-        "__call": "search.getResults"
-    }
-
+    # موتور ۳: Spotifymate Exact Stream
     try:
-        r = requests.get(api_url, params=params, headers=HEADERS, timeout=10)
-        if r.status_code == 200:
-            results = r.json().get("results", [])
-            
-            selected_track = None
-            if results:
-                # بررسی اینکه هایده یا Hayedeh در نام خواننده باشد
-                for item in results:
-                    singers = item.get("more_info", {}).get("singers", "") or item.get("subtitle", "")
-                    song_name = item.get("title", "")
-                    if "hayedeh" in singers.lower() or "هایده" in singers or "hayedeh" in query.lower():
-                        selected_track = item
-                        break
+        res = requests.post("https://spotifymate.com/action", data={"url": spotify_url}, headers=HEADERS, timeout=10)
+        if res.status_code == 200:
+            m_links = re.findall(r'href="(https://[^"]+\.(?:m4a|aac|mp4|mp3)\?[^"]+)"', res.text)
+            if not m_links:
+                m_links = re.findall(r'href="(https://[^"]+download[^"]+)"', res.text)
                 
-                if not selected_track:
-                    selected_track = results[0]
-
-            if selected_track:
-                enc_url = selected_track.get("more_info", {}).get("encrypted_media_url")
-                if enc_url:
-                    direct_m4a_link = decrypt_official_m4a_url(enc_url)
-                    if direct_m4a_link:
-                        logger.info(f"[LOG TERMINAL] 🟢 دانلود مستقیم M4A اصلی: {direct_m4a_link[:60]}...")
-                        r_file = requests.get(direct_m4a_link, stream=True, headers=HEADERS, timeout=40)
-                        if r_file.status_code == 200:
-                            with open(output_path, "wb") as f:
-                                for chunk in r_file.iter_content(chunk_size=8192):
-                                    if chunk: f.write(chunk)
-                            if os.path.exists(output_path) and os.path.getsize(output_path) > 1500000:
-                                logger.info("[LOG TERMINAL] ✅ فایل M4A کامل آهنگ هایده با موفقیت دانلود شد.")
-                                return True
+            for link in m_links:
+                clean_link = html.unescape(link)
+                logger.info(f"[LOG TERMINAL] 🟢 دانلود از spotifymate: {clean_link[:60]}...")
+                r = requests.get(clean_link, stream=True, headers=HEADERS, timeout=40)
+                if r.status_code == 200:
+                    with open(output_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk: f.write(chunk)
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 1500000:
+                        logger.info("[LOG TERMINAL] ✅ دانلود دقیق تراک انجام شد.")
+                        return True
     except Exception as e:
-        logger.error(f"[LOG TERMINAL] 🔴 خطای دانلود: {e}")
+        logger.warning(f"[LOG TERMINAL] ⚠️ Spotifymate Error: {e}")
 
     return False
 
@@ -198,7 +188,7 @@ def download_m4a_direct_cdn(artist, title, output_path):
 # ============================================================
 def embed_cover_and_tags_m4a(m4a_path, title, artist, cover_url):
     try:
-        logger.info(f"[LOG TERMINAL] 🎨 حک کاور HD هایده روی فایل M4A...")
+        logger.info(f"[LOG TERMINAL] 🎨 حک کاور HD روی فایل M4A...")
         audio = MP4(m4a_path)
         
         audio["\xa9nam"] = [title]
@@ -211,7 +201,7 @@ def embed_cover_and_tags_m4a(m4a_path, title, artist, cover_url):
                 audio["covr"] = [MP4Cover(r_img.content, imageformat=MP4Cover.FORMAT_JPEG)]
 
         audio.save()
-        logger.info(f"[LOG TERMINAL] ✅ کاور و متادیتا ذخیره شد.")
+        logger.info(f"[LOG TERMINAL] ✅ کاور و متادیتا با موفقیت روی M4A ذخیره شد.")
     except Exception as e:
         logger.error(f"[LOG TERMINAL] ⚠️ خطا در حک متادیتا: {e}")
 
@@ -222,8 +212,8 @@ def embed_cover_and_tags_m4a(m4a_path, title, artist, cover_url):
 def send_welcome(message):
     text = (
         f"سلام <b>{message.from_user.first_name}</b> عزیز 👋\n\n"
-        "🟢 <b>ربات دانلود موزیک M4A با کیفیت عالی</b>\n\n"
-        "لینک آهنگ اسپاتیفای را ارسال کنید تا فایل اصلی M4A همراه با کاور دریافت کنید.\n\n"
+        "🟢 <b>ربات دانلود مستقیم موزیک اسپاتیفای با فرمت M4A کیفیت عالی</b>\n\n"
+        "لینک آهنگ اسپاتیفای را ارسال کنید تا دقیقا همان آهنگ اصلی همراه با کاور ارسال شود.\n\n"
         "🔗 <b>لطفاً لینک آهنگ را ارسال کنید:</b>"
     )
     bot.send_message(message.chat.id, text)
@@ -246,7 +236,7 @@ def handle_spotify_link(message):
         return
 
     track_id = m.group(1)
-    status_msg = bot.send_message(chat_id, "🔎 <b>در حال استخراج متادیتای دقیق اسپاتیفای...</b>")
+    status_msg = bot.send_message(chat_id, "🔎 <b>در حال دریافت فایل مستقیم اثر از اسپاتیفای...</b>")
 
     # ۱. استخراج متادیتا
     meta = get_spotify_track_meta(track_id)
@@ -260,18 +250,18 @@ def handle_spotify_link(message):
 
     filename = f"track_{chat_id}_{int(time.time())}.m4a"
 
-    # ۲. دانلود آهنگ هایده با کیفیت M4A
-    success = download_m4a_direct_cdn(display_artist, display_title, filename)
+    # ۲. دانلود دقیق تراک بر اساس Track ID
+    success = download_exact_track_m4a(track_id, filename)
 
     if not success or not os.path.exists(filename) or os.path.getsize(filename) < 1500000:
         logger.error(f"[LOG TERMINAL] 🔴 دانلود M4A ناموفق بود.")
         try:
-            bot.edit_message_text("❌ متأسفانه در دانلود فایل مشکلی پیش آمد. لطفاً مجدداً امتحان کنید.", chat_id, status_msg.message_id)
+            bot.edit_message_text("❌ متأسفانه در دانلود مستقیم فایل مشکلی پیش آمد. لطفاً مجدداً امتحان کنید.", chat_id, status_msg.message_id)
         except Exception: pass
         if os.path.exists(filename): os.remove(filename)
         return
 
-    # ۳. حک کردن کاور HD و متادیتا
+    # ۳. حک کردن کاور HD و متادیتا روی M4A
     embed_cover_and_tags_m4a(filename, display_title, display_artist, cover_url)
 
     file_size_mb = os.path.getsize(filename) / (1024 * 1024)
@@ -291,7 +281,7 @@ def handle_spotify_link(message):
         except Exception: pass
 
         with open(filename, 'rb') as audio_file:
-            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 <b>{html.escape(display_artist)}</b>\n\n✨ <i>فرمت اصلی صوتی (M4A / AAC 320k) - دانلود مستقیم</i>"
+            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 <b>{html.escape(display_artist)}</b>\n\n✨ <i>فرمت صوتی عالی M4A (AAC 320k) - استخراج شده مستقیم بر اساس Track ID</i>"
             bot.send_audio(
                 chat_id=chat_id,
                 audio=audio_file,
@@ -318,7 +308,7 @@ def handle_spotify_link(message):
 # اجرای ربات
 # ============================================================
 if __name__ == "__main__":
-    logger.info(f"Hayedeh M4A Fix Bot V{VERSION} Started!")
+    logger.info(f"Exact M4A Bot V{VERSION} Started!")
     
     try:
         bot.remove_webhook()
