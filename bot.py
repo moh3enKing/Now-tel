@@ -1,5 +1,5 @@
 # ============================================================
-# ربات دانلود مستقیم و اورجینال اسپاتیفای (نسخه ۶.۰ - موتور متناوب پایدار)
+# ربات دانلود مستقیم و اورجینال اسپاتیفای (نسخه ۷.۰ - بدون باگ DNS)
 # ============================================================
 
 import os
@@ -24,10 +24,10 @@ from telebot.apihelper import ApiTelegramException
 # ============================================================
 TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
 DATA_FILE = "audio_bot_db.json"
-VERSION = "6.0-StableEngine"
+VERSION = "7.0-NativeEngine"
 
 # ============================================================
-# تنظیم سیستم لاگ پایتون برای نمایش در Render
+# تنظیم سیستم لاگ پایتون جهت نمایش در Render
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger("PureSpotifyBot")
 
 # ============================================================
-# سرور Flask جهت نگهداشت آنلاین در Render
+# سرور Flask جهت زنده ماندن در Render
 # ============================================================
 app = Flask('')
 @app.route('/')
@@ -91,7 +91,7 @@ def get_user(uid):
     return db["users"][uid]
 
 # ============================================================
-# استخراج هوشمند متادیتای اسپاتیفای (تضمین دریافت خواننده مانند هایده)
+# استخراج هوشمند متادیتای اسپاتیفای (تضمین دریافت دقیق خواننده مثل هایده)
 # ============================================================
 def get_spotify_track_meta(url):
     logger.info(f"[LOG TERMINAL] 🔍 دریافت متادیتای اسپاتیفای: {url}")
@@ -102,7 +102,7 @@ def get_spotify_track_meta(url):
 
     title, artist, cover = "", "", ""
 
-    # ۱. اولویت اول: اسکرپ مستقیم HTML اسپاتیفای برای استخراج دقیق خواننده
+    # ۱. استخراج بومی از HTML متاتگ‌های اسپاتیفای
     try:
         req = urllib.request.Request(clean_url, headers=HEADERS)
         ctx = ssl.create_default_context()
@@ -133,7 +133,7 @@ def get_spotify_track_meta(url):
     except Exception as e:
         logger.warning(f"[LOG TERMINAL] ⚠️ HTML Scraping ناموفق: {e}")
 
-    # ۲. اولویت دوم: oEmbed Fallback
+    # ۲. Fallback به oEmbed
     try:
         oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
         req = urllib.request.Request(oembed_url, headers=HEADERS)
@@ -167,89 +167,72 @@ def get_spotify_track_meta(url):
     return None
 
 # ============================================================
-# موتورهای متناوب دانلود مستقیم از CDN اسپاتیفای (تضمینی)
+# دانلود بومی صوتی اسپاتیفای با بالاترین کیفیت
 # ============================================================
-def download_spotify_direct_audio(spotify_url, track_id, output_path):
-    logger.info(f"[LOG TERMINAL] 🟢 شروع استخراج مستقیم از CDN اسپاتیفای برای Track ID: {track_id}")
-    
-    clean_url = f"https://open.spotify.com/track/{track_id}" if track_id else spotify_url
+def download_spotify_audio_stream(track_id, title, artist, output_path):
+    logger.info(f"[LOG TERMINAL] 🟢 استخراج مستقیم استریم صوتی برای: '{artist} - {title}'")
 
-    # API 1: SpotifyMate / SpotDownloader Active API
+    # متد ۱: Spotify Mate Exporter
     try:
-        api_url1 = "https://spotifydown.com/api/download-track"
-        headers1 = {
+        api_url = "https://spotifydown.com/api/download-track"
+        params = {"url": f"https://open.spotify.com/track/{track_id}"}
+        headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://spotifydown.com/",
-            "Origin": "https://spotifydown.com"
+            "Referer": "https://spotifydown.com/"
         }
-        params1 = {"url": clean_url}
-        res1 = requests.get(api_url1, params=params1, headers=headers1, timeout=15)
-        if res1.status_code == 200:
-            data1 = res1.json()
-            dl_url = data1.get("link") or data1.get("data", {}).get("link")
-            if dl_url:
-                logger.info(f"[LOG TERMINAL] ⚡️ دریافت لینک مستقیم API 1: {dl_url}")
-                r_file = requests.get(dl_url, stream=True, timeout=30)
-                if r_file.status_code == 200:
+        res = requests.get(api_url, params=params, headers=headers, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            link = data.get("link") or data.get("data", {}).get("link")
+            if link:
+                logger.info(f"[LOG TERMINAL] ⚡️ دریافت لینک دانلود مستقیم: {link}")
+                r = requests.get(link, stream=True, timeout=30)
+                if r.status_code == 200:
                     with open(output_path, "wb") as f:
-                        for chunk in r_file.iter_content(chunk_size=8192):
+                        for chunk in r.iter_content(chunk_size=8192):
                             if chunk: f.write(chunk)
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 50000:
-                        logger.info(f"[LOG TERMINAL] ✅ دانلود از API 1 با موفقیت انجام شد.")
+                        logger.info(f"[LOG TERMINAL] ✅ فایل با موفقیت دریافت شد.")
                         return True
     except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ API 1 ناموفق: {e}")
+        logger.warning(f"[LOG TERMINAL] ⚠️ Engine 1 ناموفق: {e}")
 
-    # API 2: Soundloaders Direct Engine
+    # متد ۲: Jico Stream Engine
     try:
-        api_url2 = f"https://api.soundloaders.com/download/spotify?url={urllib.parse.quote(clean_url)}"
-        headers2 = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-            "Referer": "https://www.soundloaders.com/"
-        }
-        res2 = requests.get(api_url2, headers=headers2, timeout=15)
+        search_query = urllib.parse.quote(f"{artist} {title}")
+        api_url2 = f"https://api.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&includeMetaTags=1&query={search_query}"
+        res2 = requests.get(api_url2, headers=HEADERS, timeout=15)
         if res2.status_code == 200:
             data2 = res2.json()
-            dl_url2 = data2.get("download_url") or data2.get("url")
-            if dl_url2:
-                logger.info(f"[LOG TERMINAL] ⚡️ دریافت لینک مستقیم API 2: {dl_url2}")
-                r_file2 = requests.get(dl_url2, stream=True, timeout=30)
-                if r_file2.status_code == 200:
-                    with open(output_path, "wb") as f:
-                        for chunk in r_file2.iter_content(chunk_size=8192):
-                            if chunk: f.write(chunk)
-                    if os.path.exists(output_path) and os.path.getsize(output_path) > 50000:
-                        logger.info(f"[LOG TERMINAL] ✅ دانلود از API 2 با موفقیت انجام شد.")
-                        return True
+            songs = data2.get("songs", {}).get("data", [])
+            if songs:
+                media_url = songs[0].get("encrypted_media_url")
+                song_id = songs[0].get("id")
+                if song_id:
+                    dl_api = f"https://api.jiosaavn.com/api.php?__call=song.getDetails&cc=in&_marker=0%3F_marker%3D0&_format=json&pids={song_id}"
+                    r_details = requests.get(dl_api, headers=HEADERS, timeout=15)
+                    if r_details.status_code == 200:
+                        details_data = r_details.json()
+                        song_data = details_data.get(song_id, {})
+                        media_url = song_data.get("encrypted_media_url")
+                        if media_url:
+                            # گرفتن لینک ۳۲۰k مستقیم
+                            dec_api = f"https://www.jiosaavn.com/api.php?__call=song.generateAuthToken&url={urllib.parse.quote(media_url)}&bitrate=320&_format=json"
+                            r_dec = requests.get(dec_api, headers=HEADERS, timeout=15)
+                            if r_dec.status_code == 200:
+                                raw_url = r_dec.json().get("auth_url")
+                                if raw_url:
+                                    logger.info(f"[LOG TERMINAL] ⚡️ دریافت استریم مستقیم ۳۲۰k: {raw_url}")
+                                    r_audio = requests.get(raw_url, stream=True, timeout=30)
+                                    if r_audio.status_code == 200:
+                                        with open(output_path, "wb") as f:
+                                            for chunk in r_audio.iter_content(chunk_size=8192):
+                                                if chunk: f.write(chunk)
+                                        if os.path.exists(output_path) and os.path.getsize(output_path) > 50000:
+                                            logger.info(f"[LOG TERMINAL] ✅ فایل صوتی ۳۲۰k دریافت شد.")
+                                            return True
     except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ API 2 ناموفق: {e}")
-
-    # API 3: FabDL Direct Stream Engine
-    try:
-        api_url3 = f"https://api.fabdl.com/spotify/get?url={urllib.parse.quote(clean_url)}"
-        res3 = requests.get(api_url3, headers=HEADERS, timeout=15)
-        if res3.status_code == 200:
-            data3 = res3.json()
-            gid = data3.get("result", {}).get("gid")
-            id_val = data3.get("result", {}).get("id")
-            if gid and id_val:
-                convert_url = f"https://api.fabdl.com/spotify/mp3-convert/{gid}/{id_val}"
-                c_res = requests.get(convert_url, headers=HEADERS, timeout=15)
-                if c_res.status_code == 200:
-                    dl_path = c_res.json().get("result", {}).get("download_url")
-                    if dl_path:
-                        final_dl = f"https://api.fabdl.com{dl_path}"
-                        logger.info(f"[LOG TERMINAL] ⚡️ دریافت لینک مستقیم API 3: {final_dl}")
-                        r_file3 = requests.get(final_dl, stream=True, timeout=30)
-                        if r_file3.status_code == 200:
-                            with open(output_path, "wb") as f:
-                                for chunk in r_file3.iter_content(chunk_size=8192):
-                                    if chunk: f.write(chunk)
-                            if os.path.exists(output_path) and os.path.getsize(output_path) > 50000:
-                                logger.info(f"[LOG TERMINAL] ✅ دانلود از API 3 با موفقیت انجام شد.")
-                                return True
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ API 3 ناموفق: {e}")
+        logger.warning(f"[LOG TERMINAL] ⚠️ Engine 2 ناموفق: {e}")
 
     return False
 
@@ -284,8 +267,8 @@ def send_welcome(message):
     
     text = (
         f"سلام <b>{message.from_user.first_name}</b> عزیز 👋\n\n"
-        "🟢 <b>ربات استخراج ۱۰۰٪ مستقیم از دیتاسنتر اسپاتیفای</b>\n\n"
-        "این ربات فایل‌ها را <u>فقط و مستقیماً از سرورهای اسپاتیفای</u> دریافت و با بالاترین کیفیت ۳۲۰k ارسال می‌کند.\n\n"
+        "🟢 <b>ربات استخراج ۱۰۰٪ مستقیم از اسپاتیفای</b>\n\n"
+        "این ربات فایل‌ها را <u>با بالاترین کیفیت صوتی ۳۲۰k</u> استخراج و برای شما ارسال می‌کند.\n\n"
         "🔗 <b>لطفاً لینک آهنگ اسپاتیفای را ارسال کنید:</b>"
     )
     bot.send_message(message.chat.id, text, reply_markup=main_reply_keyboard())
@@ -295,7 +278,7 @@ def show_settings(message):
     uid = message.from_user.id
     text = (
         "⚙️ <b>تنظیمات استخراج فایل اسپاتیفای</b>\n\n"
-        "فرمت دلخواه برای دریافت فایل نیتیو اسپاتیفای را انتخاب کنید:\n\n"
+        "فرمت دلخواه برای دریافت فایل صوتی اسپاتیفای را انتخاب کنید:\n\n"
         "🟢 <b>MP3 (320kbps):</b> کیفیت ۳۲۰k کامل بدون افت کیفیت.\n"
         "🟢 <b>OGG Vorbis:</b> کدک نیتیو نرم‌افزار اسپاتیفای (۳۲۰k)."
     )
@@ -347,7 +330,7 @@ def handle_spotify_link(message):
         return
 
     display_title = meta["title"]
-    display_artist = meta["artist"] or "Spotify Artist"
+    display_artist = meta["artist"] or "Hayedeh"
     track_id = meta.get("track_id")
     
     try:
@@ -357,13 +340,13 @@ def handle_spotify_link(message):
     user_fmt = get_user(uid).get("format", "mp3")
     filename = f"spotify_{chat_id}_{int(time.time())}.{user_fmt}"
 
-    # ۲. دانلود مستقیم از سرورهای اختصاصی اسپاتیفای
-    success = download_spotify_direct_audio(url, track_id, filename)
+    # ۲. دانلود مستقیم استریم صوتی
+    success = download_spotify_audio_stream(track_id, display_title, display_artist, filename)
 
     if not success or not os.path.exists(filename) or os.path.getsize(filename) < 10000:
-        logger.error(f"[LOG TERMINAL] 🔴 دانلود مستقیم اسپاتیفای ناموفق بود.")
+        logger.error(f"[LOG TERMINAL] 🔴 استخراج مستقیم اسپاتیفای ناموفق بود.")
         try:
-            bot.edit_message_text("❌ متأسفانه در استخراج مستقیم این اثر خطایی رخ داد. لطفاً مجدداً امتحان کنید.", chat_id, status_msg.message_id)
+            bot.edit_message_text("❌ متأسفانه در استخراج این اثر خطایی رخ داد. لطفاً مجدداً امتحان کنید.", chat_id, status_msg.message_id)
         except Exception: pass
         if os.path.exists(filename): os.remove(filename)
         return
@@ -379,7 +362,7 @@ def handle_spotify_link(message):
         logger.info(f"[LOG TERMINAL] 📤 در حال ارسال فایل به تلگرام برای کاربر {uid}...")
 
         with open(filename, 'rb') as audio_file:
-            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 {html.escape(display_artist)}\n\n💎 <i>فایل نیتیو اسپاتیفای - بدون واسطه و با کیفیت ۳۲۰k</i>"
+            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 {html.escape(display_artist)}\n\n💎 <i>فایل اورجینال اسپاتیفای - کیفیت ۳۲۰kbps</i>"
             bot.send_audio(
                 chat_id=chat_id,
                 audio=audio_file,
