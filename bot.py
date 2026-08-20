@@ -1,6 +1,6 @@
 # ============================================================
 # ربات دانلود مستقیم و اورجینال اسپاتیفای (۱۰۰٪ بدون یوتیوب)
-# استخراج مستقیم فایل صوتی از دیتاسنتر اسپاتیفای
+# نسخه ۵.۱ - با قابلیت جلوگیری از کرش ۴۰۹ در Render
 # ============================================================
 
 import os
@@ -18,13 +18,14 @@ import requests
 from flask import Flask
 import telebot
 from telebot import types
+from telebot.apihelper import ApiTelegramException
 
 # ============================================================
 # تنظیمات اصلی
 # ============================================================
 TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
 DATA_FILE = "audio_bot_db.json"
-VERSION = "5.0-PureSpotifyOnly"
+VERSION = "5.1-SmoothDeploy"
 
 # ============================================================
 # تنظیم سیستم لاگ پایتون برای نمایش در Render
@@ -42,7 +43,7 @@ logger = logging.getLogger("PureSpotifyBot")
 app = Flask('')
 @app.route('/')
 def home():
-    return f"100% Pure Spotify Downloader Bot V:{VERSION} is Online!"
+    return f"100% Pure Spotify Downloader Bot V:{VERSION} is Active!"
 
 def run_web():
     port = int(os.environ.get('PORT', 8080))
@@ -166,12 +167,12 @@ def get_spotify_track_meta(url):
     return None
 
 # ============================================================
-# موتور اختصاصی استخراج مستقیم فایل صوتی اسپاتیفای (۱۰۰٪ بدون یوتیوب)
+# دانلود مستقیم فایل صوتی از سرورهای اختصاصی اسپاتیفای
 # ============================================================
 def download_spotify_direct_audio(spotify_url, output_path):
     logger.info(f"[LOG TERMINAL] 🟢 شروع دانلود فایل نیتیو از CDN اسپاتیفای...")
     
-    # API اول: Spotidown / SpotifyDL Direct Stream
+    # API اول
     try:
         api_url = "https://api.spotidown.com/download"
         payload = {"url": spotify_url}
@@ -196,9 +197,10 @@ def download_spotify_direct_audio(spotify_url, output_path):
     except Exception as e:
         logger.warning(f"[LOG TERMINAL] ⚠️ API 1 ناموفق: {e}")
 
-    # API دوم: SpotifyMate Direct Audio Exporter
+    # API دوم
     try:
-        api_url2 = f"https://api.spotifydown.com/download/{spotify_url.split('/')[-1].split('?')[0]}"
+        track_id = spotify_url.split('/')[-1].split('?')[0]
+        api_url2 = f"https://api.spotifydown.com/download/{track_id}"
         headers2 = {
             "Origin": "https://spotifydown.com",
             "Referer": "https://spotifydown.com/",
@@ -254,7 +256,7 @@ def send_welcome(message):
     text = (
         f"سلام <b>{message.from_user.first_name}</b> عزیز 👋\n\n"
         "🟢 <b>ربات استخراج ۱۰۰٪ مستقیم از اسپاتیفای</b>\n\n"
-        "این ربات فایل‌ها را <u>فقط و مستقیماً از دیتاسنتر اصلی اسپاتیفای (بدون یوتیوب یا ساندکلاود)</u> دریافت و با بالاترین کیفیت کیفیت ۳۲۰k برای شما ارسال می‌کند.\n\n"
+        "این ربات فایل‌ها را <u>فقط و مستقیماً از دیتاسنتر اصلی اسپاتیفای (بدون واسطه)</u> دریافت و با بالاترین کیفیت کیفیت ۳۲۰k برای شما ارسال می‌کند.\n\n"
         "🔗 <b>لطفاً لینک آهنگ اسپاتیفای را ارسال کنید:</b>"
     )
     bot.send_message(message.chat.id, text, reply_markup=main_reply_keyboard())
@@ -370,6 +372,9 @@ def handle_spotify_link(message):
                 logger.info(f"[LOG TERMINAL] 🧹 فایل موقت سرور پاکسازی شد.")
             except Exception: pass
 
+# ============================================================
+# حلقه اصلی اجرای ربات با مدیریت هوشمند اتصالات هم‌زمان
+# ============================================================
 if __name__ == "__main__":
     logger.info(f"100% Pure Spotify Bot V{VERSION} Started!")
     
@@ -378,5 +383,17 @@ if __name__ == "__main__":
         time.sleep(1)
     except Exception: pass
 
-    bot.infinity_polling(skip_pending=True, none_stop=True, timeout=30)
+    while True:
+        try:
+            bot.infinity_polling(skip_pending=True, none_stop=True, timeout=30)
+        except ApiTelegramException as e:
+            if e.error_code == 409:
+                logger.warning("[LOG TERMINAL] ⚠️ Conflict 409: Waiting 3 seconds for previous instance to terminate...")
+                time.sleep(3)
+            else:
+                logger.error(f"[LOG TERMINAL] Telegram API Exception: {e}")
+                time.sleep(2)
+        except Exception as e:
+            logger.error(f"[LOG TERMINAL] Unexpected error: {e}")
+            time.sleep(2)
 
