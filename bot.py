@@ -1,6 +1,5 @@
 # ============================================================
-# ربات دانلود مستقیم صوتی اسپاتیفای - نسخه مقاوم در برابر Rate-Limit
-# استخراج مستقیم متادیتا و فایل بدون بلاکی آی‌پی Render
+# ربات دانلود مستقیم صوتی اسپاتیفای - نسخه ۳.۱ (اصلاح کامل متادیتای خواننده)
 # ============================================================
 
 import os
@@ -24,10 +23,10 @@ from telebot import types
 # ============================================================
 TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
 DATA_FILE = "audio_bot_db.json"
-VERSION = "3.0-BypassBlock"
+VERSION = "3.1-FixMetadata"
 
 # ============================================================
-# تنظیم سیستم لاگ پایتون برای نمایش در Render
+# تنظیم سیستم لاگ پایتون
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -91,40 +90,17 @@ def get_user(uid):
     return db["users"][uid]
 
 # ============================================================
-# استخراج هوشمند متادیتای اسپاتیفای (بای‌پاس کامل اکستراکتورها)
+# استخراج هوشمند متادیتای اسپاتیفای (تضمین دریافت خواننده)
 # ============================================================
 def get_spotify_track_meta(url):
     logger.info(f"[LOG TERMINAL] 🔍 دریافت متادیتای مستقیم اسپاتیفای: {url}")
     
-    # استخراج ID
     m = re.search(r"track/([A-Za-z0-9]{22})", url)
     clean_url = f"https://open.spotify.com/track/{m.group(1)}" if m else url
 
-    # ۱. متد اول: oEmbed رسمی
-    try:
-        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
-        req = urllib.request.Request(oembed_url, headers=HEADERS)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            t_raw = data.get("title", "").strip()
-            a_raw = data.get("author_name", "").strip()
-            cover = data.get("thumbnail_url", "")
-            
-            if " - " in t_raw and not a_raw:
-                parts = t_raw.split(" - ")
-                t_raw, a_raw = parts[0].strip(), parts[1].strip()
-                
-            if t_raw:
-                logger.info(f"[LOG TERMINAL] ✅ oEmbed موفق: خواننده='{a_raw}', آهنگ='{t_raw}'")
-                return {"title": t_raw, "artist": a_raw or "Spotify", "cover": cover}
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ oEmbed ناموفق: {e}")
+    title, artist, cover = "", "", ""
 
-    # ۲. متد دوم: اسکرپ مستقیم متاتگ‌های OpenGraph
+    # ۱. متد اول: اسکرپ مستقیم HTML (بسیار دقیق برای آهنگ‌های ایرانی)
     try:
         req = urllib.request.Request(clean_url, headers=HEADERS)
         ctx = ssl.create_default_context()
@@ -138,17 +114,55 @@ def get_spotify_track_meta(url):
             og_desc = re.search(r'<meta property="og:description" content="(.*?)"', html_content)
             og_img = re.search(r'<meta property="og:image" content="(.*?)"', html_content)
             
-            title = html.unescape(og_title.group(1).strip()) if og_title else ""
-            desc = html.unescape(og_desc.group(1).strip()) if og_desc else ""
-            cover = og_img.group(1) if og_img else ""
+            if og_title: title = html.unescape(og_title.group(1).strip())
+            if og_img: cover = og_img.group(1)
             
-            artist = desc.split("·")[0].strip() if "·" in desc else "Spotify Artist"
-            
-            if title:
-                logger.info(f"[LOG TERMINAL] ✅ HTML OG موفق: خواننده='{artist}', آهنگ='{title}'")
+            if og_desc:
+                desc = html.unescape(og_desc.group(1).strip())
+                # اسپاتیفای توضیحات را با · یا by جدا می‌کند
+                parts = [p.strip() for p in desc.split("·") if p.strip()]
+                if parts:
+                    artist = parts[0]
+                    # پاک‌سازی کلمات اضافه مانند Song یا Single
+                    if artist.lower() in ["song", "single", "album"] and len(parts) > 1:
+                        artist = parts[1]
+
+            if title and artist and artist.lower() not in ["song", "single", "album"]:
+                logger.info(f"[LOG TERMINAL] ✅ HTML Scraping موفق: خواننده='{artist}', آهنگ='{title}'")
                 return {"title": title, "artist": artist, "cover": cover}
     except Exception as e:
-        logger.error(f"[LOG TERMINAL] ❌ اسکرپ HTML ناموفق: {e}")
+        logger.warning(f"[LOG TERMINAL] ⚠️ HTML Scraping ناموفق: {e}")
+
+    # ۲. متد دوم: oEmbed Fallback
+    try:
+        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
+        req = urllib.request.Request(oembed_url, headers=HEADERS)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            t_raw = data.get("title", "").strip()
+            a_raw = data.get("author_name", "").strip()
+            cover_raw = data.get("thumbnail_url", "")
+            
+            if " - " in t_raw and not a_raw:
+                parts = t_raw.split(" - ")
+                t_raw, a_raw = parts[0].strip(), parts[1].strip()
+                
+            title = title or t_raw
+            artist = artist or a_raw
+            cover = cover or cover_raw
+            
+            if title:
+                logger.info(f"[LOG TERMINAL] ✅ oEmbed موفق: خواننده='{artist}', آهنگ='{title}'")
+                return {"title": title, "artist": artist, "cover": cover}
+    except Exception as e:
+        logger.error(f"[LOG TERMINAL] ❌ oEmbed ناموفق: {e}")
+
+    if title:
+        return {"title": title, "artist": artist, "cover": cover}
 
     return None
 
@@ -251,7 +265,13 @@ def handle_spotify_link(message):
     display_title = meta["title"]
     display_artist = meta["artist"]
     
-    logger.info(f"[LOG TERMINAL] 🚀 در حال استخراج استریم صوتی اورجینال برای: '{display_artist} - {display_title}'")
+    # ساخت کلمه سرچ دقیق بدون کلمه Spotify
+    if display_artist:
+        search_query = f"ytsearch1:{display_artist} {display_title}"
+    else:
+        search_query = f"ytsearch1:{display_title}"
+
+    logger.info(f"[LOG TERMINAL] 🚀 استخراج استریم صوتی برای: '{display_artist} - {display_title}' با عبارت '{search_query}'")
     
     try:
         bot.edit_message_text("📥 <b>در حال استخراج و دانلود مستقیم استریم اورجینال...</b>", chat_id, status_msg.message_id)
@@ -280,8 +300,6 @@ def handle_spotify_link(message):
         'headers': HEADERS,
     }
 
-    search_query = f"ytsearch1:{display_artist} {display_title} audio"
-
     downloaded_file = None
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -303,13 +321,13 @@ def handle_spotify_link(message):
         logger.info(f"[LOG TERMINAL] 📤 در حال آپلود فایل به تلگرام برای کاربر {uid}...")
 
         with open(downloaded_file, 'rb') as audio_file:
-            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 {html.escape(display_artist)}\n\n💎 <i>استریم خام اسپاتیفای - بدون حتی ۱٪ تبدیل یا افت کیفیت</i>"
+            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 {html.escape(display_artist or 'Unknown Artist')}\n\n💎 <i>استریم خام - بدون حتی ۱٪ تبدیل یا افت کیفیت</i>"
             bot.send_audio(
                 chat_id=chat_id,
                 audio=audio_file,
                 caption=caption,
                 title=display_title,
-                performer=display_artist
+                performer=display_artist or "Spotify Artist"
             )
             
         logger.info(f"[LOG TERMINAL] 🎉 ارسال فایل با موفقیت انجام شد!")
