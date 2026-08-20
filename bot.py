@@ -7,6 +7,7 @@ import re
 import json
 import sys
 import time
+import hashlib
 import logging
 import threading
 import html
@@ -27,7 +28,7 @@ TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
 # توکن ARL دیزر برای دسترسی مستقیم به استریم‌های کیفیت بالا (320kbps MP3 / FLAC)
 DEEZER_ARL = "e0b9fae2ed64f52fa4b0cb89c937f3eb30fb8d49830db9dc4d38dca5eb90a3a41b52e2be8efbb081825838d76d4948a3c861e6fa0bd4fca14dfd5fa7b0bd1929"
 DATA_FILE = "audio_bot_db.json"
-VERSION = "15.1-FastMetaEngine"
+VERSION = "15.2-FixedHashlib"
 
 # ============================================================
 # تنظیم سیستم لاگ
@@ -60,7 +61,7 @@ bot = telebot.TeleBot(TOKEN, parse_mode="HTML", threaded=False)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
 }
 
 # ============================================================
@@ -68,7 +69,7 @@ HEADERS = {
 # ============================================================
 def get_blowfish_key(track_id):
     SECRET = "g42fzcuhw2022bcd"
-    md5_id = requests.utils.hashlib.md5(str(track_id).encode('utf-8')).hexdigest()
+    md5_id = hashlib.md5(str(track_id).encode('utf-8')).hexdigest()
     key = ""
     for i in range(16):
         key += chr(ord(md5_id[i]) ^ ord(md5_id[i + 16]) ^ ord(SECRET[i]))
@@ -79,7 +80,7 @@ def decrypt_chunk(chunk, key):
     return cipher.decrypt(chunk)
 
 # ============================================================
-# استخراج سریع متادیتای اسپاتیفای بدون معطلی و بلاک شدن
+# استخراج سریع و دقیق متادیتای اسپاتیفای
 # ============================================================
 def get_spotify_track_meta(url):
     logger.info(f"[LOG TERMINAL] 🔍 در حال دریافت متادیتای اسپاتیفای: {url}")
@@ -87,22 +88,25 @@ def get_spotify_track_meta(url):
     track_id = m.group(1) if m else None
     clean_url = f"https://open.spotify.com/track/{track_id}" if track_id else url
 
-    # روش اول: استفاده از oEmbed رسمی اسپاتیفای (سریع و بدون محدودیت آی‌پی)
+    title, artist, cover = "", "", ""
+
+    # روش اول: استفاده از oEmbed رسمی اسپاتیفای
     try:
         oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
         resp = requests.get(oembed_url, headers=HEADERS, timeout=5)
         if resp.status_code == 200:
             data = resp.json()
-            title = data.get("title", "").strip()
-            artist = data.get("author_name", "").strip()
+            t_raw = data.get("title", "").strip()
+            a_raw = data.get("author_name", "").strip()
             cover = data.get("thumbnail_url", "")
 
-            # اگر عنوان به صورت "Song Name by Artist" یا "Artist - Song Name" باشد
-            if " - " in title:
-                parts = title.split(" - ", 1)
-                if not artist:
-                    artist = parts[0].strip()
+            if " - " in t_raw:
+                parts = t_raw.split(" - ", 1)
+                artist = parts[0].strip()
                 title = parts[1].strip()
+            else:
+                title = t_raw
+                artist = a_raw
 
             if title:
                 logger.info(f"[LOG TERMINAL] ✅ استخراج متادیتا از oEmbed موفق بود: خواننده='{artist}', آهنگ='{title}'")
@@ -110,7 +114,7 @@ def get_spotify_track_meta(url):
     except Exception as e:
         logger.warning(f"[LOG TERMINAL] ⚠️ خطا در oEmbed: {e}")
 
-    # روش دوم: استفاده از API آزاد Spotify Embed
+    # روش دوم: استفاده از API Embed اسپاتیفای
     if track_id:
         try:
             embed_api = f"https://open.spotify.com/embed/track/{track_id}"
@@ -119,14 +123,12 @@ def get_spotify_track_meta(url):
                 m_title = re.search(r'<title>(.*?)</title>', res.text)
                 if m_title:
                     raw_title = html.unescape(m_title.group(1)).replace(" | Spotify", "").strip()
-                    parts = raw_title.split(" - ", 1)
-                    if len(parts) == 2:
+                    if " - " in raw_title:
+                        parts = raw_title.split(" - ", 1)
                         artist, title = parts[0].strip(), parts[1].strip()
                     else:
                         title = raw_title
-                        artist = ""
                     
-                    # استخراج عکس کاور
                     m_img = re.search(r'"image_url":"(.*?)"', res.text)
                     cover = m_img.group(1).replace(r"\u002F", "/") if m_img else ""
 
@@ -156,6 +158,11 @@ def download_deezer_hq(artist, title, output_path):
         search_res = session.get(f"https://api.deezer.com/search?q={urllib.parse.quote(query)}", headers=HEADERS, timeout=8).json()
         tracks = search_res.get("data", [])
 
+        # اگر با نام خواننده پیدا نشد، فقط با عنوان آهنگ بگردد
+        if not tracks and artist:
+            search_res = session.get(f"https://api.deezer.com/search?q={urllib.parse.quote(title)}", headers=HEADERS, timeout=8).json()
+            tracks = search_res.get("data", [])
+
         if not tracks:
             logger.warning(f"[LOG TERMINAL] ⚠️ آهنگ '{query}' در Deezer یافت نشد.")
             return False
@@ -178,7 +185,7 @@ def download_deezer_hq(artist, title, output_path):
 
         # ساخت URL دانلود مستقیم سرور
         url_part = f"{md5_origin}¤{format_code}¤{deezer_id}¤{media_version}".encode('utf-8')
-        md5_part = requests.utils.hashlib.md5(url_part).hexdigest()
+        md5_part = hashlib.md5(url_part).hexdigest()
         
         # کلید Blowfish جهت رمزگشایی
         bf_key = get_blowfish_key(deezer_id)
