@@ -7,13 +7,11 @@ import re
 import json
 import sys
 import time
-import ssl
 import logging
 import threading
 import html
 import requests
 import urllib.parse
-import urllib.request
 from flask import Flask
 import telebot
 from telebot.apihelper import ApiTelegramException
@@ -29,7 +27,7 @@ TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
 # توکن ARL دیزر برای دسترسی مستقیم به استریم‌های کیفیت بالا (320kbps MP3 / FLAC)
 DEEZER_ARL = "e0b9fae2ed64f52fa4b0cb89c937f3eb30fb8d49830db9dc4d38dca5eb90a3a41b52e2be8efbb081825838d76d4948a3c861e6fa0bd4fca14dfd5fa7b0bd1929"
 DATA_FILE = "audio_bot_db.json"
-VERSION = "15.0-DeezerHQEngine"
+VERSION = "15.1-FastMetaEngine"
 
 # ============================================================
 # تنظیم سیستم لاگ
@@ -81,52 +79,62 @@ def decrypt_chunk(chunk, key):
     return cipher.decrypt(chunk)
 
 # ============================================================
-# استخراج کامل متادیتای اسپاتیفای
+# استخراج سریع متادیتای اسپاتیفای بدون معطلی و بلاک شدن
 # ============================================================
 def get_spotify_track_meta(url):
-    logger.info(f"[LOG TERMINAL] 🔍 دریافت متادیتای اسپاتیفای: {url}")
+    logger.info(f"[LOG TERMINAL] 🔍 در حال دریافت متادیتای اسپاتیفای: {url}")
     m = re.search(r"track/([A-Za-z0-9]{22})", url)
     track_id = m.group(1) if m else None
     clean_url = f"https://open.spotify.com/track/{track_id}" if track_id else url
 
-    title, artist, cover = "", "", ""
+    # روش اول: استفاده از oEmbed رسمی اسپاتیفای (سریع و بدون محدودیت آی‌پی)
     try:
-        req = urllib.request.Request(clean_url, headers=HEADERS)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            html_content = resp.read().decode("utf-8", errors="ignore")
-            
-            og_title = re.search(r'<meta property="og:title" content="(.*?)"', html_content)
-            og_desc = re.search(r'<meta property="og:description" content="(.*?)"', html_content)
-            og_img = re.search(r'<meta property="og:image" content="(.*?)"', html_content)
-            
-            if og_title:
-                raw_t = html.unescape(og_title.group(1).strip())
-                if " - " in raw_t:
-                    parts = raw_t.split(" - ", 1)
-                    artist, title = parts[0].strip(), parts[1].strip()
-                else:
-                    title = raw_t
+        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
+        resp = requests.get(oembed_url, headers=HEADERS, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            title = data.get("title", "").strip()
+            artist = data.get("author_name", "").strip()
+            cover = data.get("thumbnail_url", "")
 
-            if og_img: cover = og_img.group(1)
-            
-            if og_desc:
-                desc = html.unescape(og_desc.group(1).strip())
-                parts = [p.strip() for p in re.split(r'[·•:-]', desc) if p.strip()]
-                for p in parts:
-                    if p.lower() not in ["song", "single", "album", "listen on spotify"] and p.lower() != title.lower() and not p.isdigit():
-                        if not artist:
-                            artist = p
-                            break
+            # اگر عنوان به صورت "Song Name by Artist" یا "Artist - Song Name" باشد
+            if " - " in title:
+                parts = title.split(" - ", 1)
+                if not artist:
+                    artist = parts[0].strip()
+                title = parts[1].strip()
 
             if title:
-                logger.info(f"[LOG TERMINAL] ✅ استخراج متادیتا موفق: خواننده='{artist}', آهنگ='{title}'")
+                logger.info(f"[LOG TERMINAL] ✅ استخراج متادیتا از oEmbed موفق بود: خواننده='{artist}', آهنگ='{title}'")
                 return {"title": title, "artist": artist, "cover": cover}
     except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ خطا در استخراج متادیتای اسپاتیفای: {e}")
+        logger.warning(f"[LOG TERMINAL] ⚠️ خطا در oEmbed: {e}")
+
+    # روش دوم: استفاده از API آزاد Spotify Embed
+    if track_id:
+        try:
+            embed_api = f"https://open.spotify.com/embed/track/{track_id}"
+            res = requests.get(embed_api, headers=HEADERS, timeout=5)
+            if res.status_code == 200:
+                m_title = re.search(r'<title>(.*?)</title>', res.text)
+                if m_title:
+                    raw_title = html.unescape(m_title.group(1)).replace(" | Spotify", "").strip()
+                    parts = raw_title.split(" - ", 1)
+                    if len(parts) == 2:
+                        artist, title = parts[0].strip(), parts[1].strip()
+                    else:
+                        title = raw_title
+                        artist = ""
+                    
+                    # استخراج عکس کاور
+                    m_img = re.search(r'"image_url":"(.*?)"', res.text)
+                    cover = m_img.group(1).replace(r"\u002F", "/") if m_img else ""
+
+                    if title:
+                        logger.info(f"[LOG TERMINAL] ✅ استخراج متادیتا از Embed API موفق بود: خواننده='{artist}', آهنگ='{title}'")
+                        return {"title": title, "artist": artist, "cover": cover}
+        except Exception as e:
+            logger.warning(f"[LOG TERMINAL] ⚠️ خطا در Embed API: {e}")
 
     return None
 
@@ -139,17 +147,17 @@ def download_deezer_hq(artist, title, output_path):
         session.cookies.set("arl", DEEZER_ARL)
         
         # ۱. دریافت Sid و User Token از Deezer
-        user_resp = session.post("https://www.deezer.com/ajax/gw-light.php?method=deezer.getUserData&api_version=1.0&api_token=", headers=HEADERS, timeout=10)
+        user_resp = session.post("https://www.deezer.com/ajax/gw-light.php?method=deezer.getUserData&api_version=1.0&api_token=", headers=HEADERS, timeout=8)
         user_data = user_resp.json()
         api_token = user_data.get("results", {}).get("checkForm")
 
         # ۲. جستجوی آهنگ در Deezer
-        query = f"{artist} {title}".strip()
-        search_res = session.get(f"https://api.deezer.com/search?q={urllib.parse.quote(query)}", headers=HEADERS, timeout=10).json()
+        query = f"{artist} {title}".strip() if artist else title
+        search_res = session.get(f"https://api.deezer.com/search?q={urllib.parse.quote(query)}", headers=HEADERS, timeout=8).json()
         tracks = search_res.get("data", [])
 
         if not tracks:
-            logger.warning("[LOG TERMINAL] ⚠️ آهنگ در Deezer یافت نشد.")
+            logger.warning(f"[LOG TERMINAL] ⚠️ آهنگ '{query}' در Deezer یافت نشد.")
             return False
 
         track_info = tracks[0]
@@ -160,7 +168,7 @@ def download_deezer_hq(artist, title, output_path):
             f"https://www.deezer.com/ajax/gw-light.php?method=song.getData&api_version=1.0&api_token={api_token}",
             json={"sng_id": deezer_id},
             headers=HEADERS,
-            timeout=10
+            timeout=8
         ).json()
 
         sng_data = track_req.get("results", {})
@@ -216,7 +224,7 @@ def embed_cover_and_tags(mp3_path, title, artist, cover_url):
         audio.add(TALB(encoding=3, text="Spotify HQ Release"))
 
         if cover_url:
-            r_img = requests.get(cover_url, headers=HEADERS, timeout=15)
+            r_img = requests.get(cover_url, headers=HEADERS, timeout=10)
             if r_img.status_code == 200:
                 audio.add(
                     APIC(
@@ -268,11 +276,11 @@ def handle_spotify_link(message):
         return
 
     display_title = meta["title"]
-    display_artist = meta["artist"] or "Spotify Artist"
+    display_artist = meta["artist"] or ""
     cover_url = meta.get("cover")
 
     try:
-        bot.edit_message_text(f"📥 <b>در حال دانلود مستقیم «{html.escape(display_artist)} - {html.escape(display_title)}» با کیفیت ۳۲۰kbps اصلی...</b>", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"📥 <b>در حال دانلود مستقیم «{html.escape(display_artist or display_title)}» با کیفیت ۳۲۰kbps اصلی...</b>", chat_id, status_msg.message_id)
     except Exception: pass
 
     filename = f"track_{chat_id}_{int(time.time())}.mp3"
