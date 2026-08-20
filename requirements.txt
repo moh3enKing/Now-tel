@@ -1,5 +1,4 @@
-pyTelegramBotAPI
-Flask
+pyrogram
+tgcrypto
 requests
-mutagen
-pycryptodome
+Flask
