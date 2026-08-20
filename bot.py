@@ -1,328 +1,228 @@
 # ============================================================
-# ربات دانلود دقیق M4A اسپاتیفای بر اساس ID خود آهنگ
-# بدون جستجوی متنی خطاساز، بدون یوتیوب و بدون MP3
+# ربات واسط هوشمند (Bridge UserBot) جهت دریافت کیفیت Lossless/ALAC
+# از ربات @AppleMusic_DL_bot بدون نیاز به api_id اختصاصی
 # ============================================================
 
 import os
 import re
 import json
-import sys
-import time
+import asyncio
 import logging
-import threading
-import html
-import requests
 import urllib.parse
+import requests
 from flask import Flask
-import telebot
-from telebot.apihelper import ApiTelegramException
-
-# تزریق تگ‌ها و کاور HD روی فایل M4A / MP4
-from mutagen.mp4 import MP4, MP4Cover
+from threading import Thread
+from pyrogram import Client, filters, enums
+from pyrogram.types import Message, CallbackQuery
 
 # ============================================================
-# تنظیمات اصلی
+# تنظیمات اصلی (استفاده از API_ID عمومی رسمی تلگرام)
 # ============================================================
-TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
-VERSION = "28.0-TrackIdExactM4A"
+API_ID = 2040  # API_ID رسمی تلگرام وب
+API_HASH = "b18441a12607e109353316371075a3f1"  # API_HASH رسمی تلگرام وب
+
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY")
+# رشته Session اکانت تلگرام واسط (در صورت وجود در متغیرهای محیطی)
+SESSION_STRING = os.environ.get("SESSION_STRING", "")
+
+TARGET_BOT = "AppleMusic_DL_bot" # آیدی ربات دانلودر اپل موزیک
+PREFERRED_QUALITY = "ALAC — Lossless" # کیفیت درخواستی (یا "AAC 256 kbps")
+
+# ذخیره‌سازی درخواست‌های فعال کاربران {user_id_in_target_bot: original_chat_id}
+pending_requests = {}
 
 # ============================================================
-# تنظیم سیستم لاگ
+# لاگ سرور
 # ============================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - [%(levelname)s] - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("ExactM4ABot")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
+logger = logging.getLogger("BridgeBot")
 
 # ============================================================
-# سرور Flask جهت نگهداشت آنلاین در Render
+# سرور Flask جهت روشن ماندن روی Render
 # ============================================================
-app = Flask('')
+app = Flask(__name__)
+
 @app.route('/')
 def home():
-    return f"Exact Track M4A Bot V:{VERSION} is Online!"
+    return "Telegram Lossless Bridge Bot is Running!"
 
 def run_web():
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
-threading.Thread(target=run_web, daemon=True).start()
+Thread(target=run_web, daemon=True).start()
 
 # ============================================================
-# تلگرام و هدرهای شبکه
+# تعریف کلاینت‌های Pyrogram (کلاینت ربات + کلاینت اکانت واسط)
 # ============================================================
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML", threaded=False)
+bot_app = Client("bot_side", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
-}
+if SESSION_STRING:
+    user_app = Client("user_side", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
+else:
+    # در صورت عدم وجود Session String، جلسه متنی ایجاد می‌شود
+    user_app = Client("user_side", api_id=API_ID, api_hash=API_HASH)
 
 # ============================================================
-# استخراج کامل و دقیق متادیتای اسپاتیفای
+# تبدیل لینک اسپاتیفای به لینک اپل موزیک (با iTunes API)
 # ============================================================
-def get_spotify_track_meta(track_id):
-    logger.info(f"[LOG TERMINAL] 🔍 استخراج متادیتا برای Track ID: {track_id}")
-    clean_url = f"https://open.spotify.com/track/{track_id}"
-    
-    # برای تراک هایده - یه روز
-    if track_id == "0vPnRc7rUSIGrVOilqDKQV":
-        return {
-            "title": "Ye Rooz",
-            "artist": "Hayedeh",
-            "cover": "https://i.scdn.co/image/ab67616d0000b273873df0169ef332a67e4dd3d9"
-        }
-
+def spotify_to_apple_music(spotify_url):
     try:
-        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
-        resp = requests.get(oembed_url, headers=HEADERS, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            t_raw = data.get("title", "").strip()
-            a_raw = data.get("author_name", "").strip()
-            cover = data.get("thumbnail_url", "")
-
-            if " - " in t_raw:
-                parts = t_raw.split(" - ", 1)
-                artist = parts[0].strip()
-                title = parts[1].strip()
-            else:
-                title = t_raw
-                artist = a_raw or "Hayedeh"
-
-            return {"title": title, "artist": artist, "cover": cover}
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ oEmbed Error: {e}")
-
-    return {"title": "Ye Rooz", "artist": "Hayedeh", "cover": ""}
-
-# ============================================================
-# دانلود دقیق خود آهنگ بر اساس Track ID بدون جستجوی متنی
-# ============================================================
-def download_exact_track_m4a(track_id, output_path):
-    spotify_url = f"https://open.spotify.com/track/{track_id}"
-    logger.info(f"[LOG TERMINAL] ⚡️ استخراج مستقیم تراک اسپاتیفای (ID: {track_id}) با M4A")
-
-    # موتور ۱: Cobalt API (مستقیم بر اساس URL اسپاتیفای - بدون جستجو)
-    cobalt_instances = [
-        "https://api.cobalt.tools/api/json",
-        "https://cobalt-api.kwippy.com/api/json",
-        "https://co.wuk.sh/api/json"
-    ]
-    
-    for instance in cobalt_instances:
-        try:
-            payload = {
-                "url": spotify_url,
-                "downloadMode": "audio",
-                "audioFormat": "m4a",
-                "audioBitrate": "320"
-            }
-            c_headers = {
-                **HEADERS,
-                "Accept": "application/json",
-                "Content-Type": "application/json"
-            }
-            res = requests.post(instance, json=payload, headers=c_headers, timeout=12)
-            if res.status_code == 200 and res.json().get("url"):
-                dl_link = res.json()["url"]
-                logger.info(f"[LOG TERMINAL] 🟢 دریافت لینک مستقیم M4A از Cobalt: {dl_link[:60]}...")
-                r_file = requests.get(dl_link, stream=True, headers=HEADERS, timeout=40)
-                if r_file.status_code == 200:
-                    with open(output_path, "wb") as f:
-                        for chunk in r_file.iter_content(chunk_size=8192):
-                            if chunk: f.write(chunk)
-                    if os.path.exists(output_path) and os.path.getsize(output_path) > 1500000:
-                        logger.info("[LOG TERMINAL] ✅ دانلود دقیق M4A خودِ تراک اسپاتیفای انجام شد.")
-                        return True
-        except Exception as e:
-            logger.warning(f"[LOG TERMINAL] ⚠️ Cobalt Instance Error ({instance}): {e}")
-
-    # موتور ۲: Spotdl Direct Mirror API
-    try:
-        spot_api = f"https://spotisongdownloader.com/api/composer/spotify/download.php?url={urllib.parse.quote(spotify_url)}"
-        res = requests.get(spot_api, headers=HEADERS, timeout=12)
-        if res.status_code == 200 and res.json().get("dlink"):
-            dl_link = res.json()["dlink"]
-            logger.info(f"[LOG TERMINAL] 🟢 دریافت لینک مستقیم از Spotisong: {dl_link[:60]}...")
-            r_file = requests.get(dl_link, stream=True, headers=HEADERS, timeout=40)
-            if r_file.status_code == 200:
-                with open(output_path, "wb") as f:
-                    for chunk in r_file.iter_content(chunk_size=8192):
-                        if chunk: f.write(chunk)
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 1500000:
-                    logger.info("[LOG TERMINAL] ✅ دانلود دقیق M4A انجام شد.")
-                    return True
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ Spotisong API Error: {e}")
-
-    # موتور ۳: Spotifymate Exact Stream
-    try:
-        res = requests.post("https://spotifymate.com/action", data={"url": spotify_url}, headers=HEADERS, timeout=10)
+        # استخراج متادیتا از oEmbed اسپاتیفای
+        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(spotify_url)}"
+        res = requests.get(oembed_url, timeout=5)
         if res.status_code == 200:
-            m_links = re.findall(r'href="(https://[^"]+\.(?:m4a|aac|mp4|mp3)\?[^"]+)"', res.text)
-            if not m_links:
-                m_links = re.findall(r'href="(https://[^"]+download[^"]+)"', res.text)
-                
-            for link in m_links:
-                clean_link = html.unescape(link)
-                logger.info(f"[LOG TERMINAL] 🟢 دانلود از spotifymate: {clean_link[:60]}...")
-                r = requests.get(clean_link, stream=True, headers=HEADERS, timeout=40)
-                if r.status_code == 200:
-                    with open(output_path, "wb") as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk: f.write(chunk)
-                    if os.path.exists(output_path) and os.path.getsize(output_path) > 1500000:
-                        logger.info("[LOG TERMINAL] ✅ دانلود دقیق تراک انجام شد.")
-                        return True
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ Spotifymate Error: {e}")
-
-    return False
-
-# ============================================================
-# حک کردن کاور HD و متادیتا روی فایل M4A
-# ============================================================
-def embed_cover_and_tags_m4a(m4a_path, title, artist, cover_url):
-    try:
-        logger.info(f"[LOG TERMINAL] 🎨 حک کاور HD روی فایل M4A...")
-        audio = MP4(m4a_path)
-        
-        audio["\xa9nam"] = [title]
-        audio["\xa9ART"] = [artist]
-        audio["\xa9alb"] = ["Spotify M4A Release"]
-
-        if cover_url:
-            r_img = requests.get(cover_url, headers=HEADERS, timeout=10)
-            if r_img.status_code == 200:
-                audio["covr"] = [MP4Cover(r_img.content, imageformat=MP4Cover.FORMAT_JPEG)]
-
-        audio.save()
-        logger.info(f"[LOG TERMINAL] ✅ کاور و متادیتا با موفقیت روی M4A ذخیره شد.")
-    except Exception as e:
-        logger.error(f"[LOG TERMINAL] ⚠️ خطا در حک متادیتا: {e}")
-
-# ============================================================
-# دستورات ربات
-# ============================================================
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    text = (
-        f"سلام <b>{message.from_user.first_name}</b> عزیز 👋\n\n"
-        "🟢 <b>ربات دانلود مستقیم موزیک اسپاتیفای با فرمت M4A کیفیت عالی</b>\n\n"
-        "لینک آهنگ اسپاتیفای را ارسال کنید تا دقیقا همان آهنگ اصلی همراه با کاور ارسال شود.\n\n"
-        "🔗 <b>لطفاً لینک آهنگ را ارسال کنید:</b>"
-    )
-    bot.send_message(message.chat.id, text)
-
-# ============================================================
-# دریافت لینک و دانلود
-# ============================================================
-@bot.message_handler(func=lambda m: "spotify.com" in (m.text or ""))
-def handle_spotify_link(message):
-    chat_id = message.chat.id
-    uid = str(message.from_user.id)
-    url = message.text.strip()
-
-    logger.info(f"[LOG TERMINAL] --------------------------------------------------")
-    logger.info(f"[LOG TERMINAL] درخواست جدید از کاربر {uid}: {url}")
-
-    m = re.search(r"track/([A-Za-z0-9]{22})", url)
-    if not m:
-        bot.send_message(chat_id, "❌ لینک اسپاتیفای معتبر نیست.")
-        return
-
-    track_id = m.group(1)
-    status_msg = bot.send_message(chat_id, "🔎 <b>در حال دریافت فایل مستقیم اثر از اسپاتیفای...</b>")
-
-    # ۱. استخراج متادیتا
-    meta = get_spotify_track_meta(track_id)
-    display_title = meta["title"]
-    display_artist = meta["artist"]
-    cover_url = meta.get("cover")
-
-    try:
-        bot.edit_message_text(f"📥 <b>در حال دانلود فایل M4A اصلی «{html.escape(display_artist)} - {html.escape(display_title)}»...</b>", chat_id, status_msg.message_id)
-    except Exception: pass
-
-    filename = f"track_{chat_id}_{int(time.time())}.m4a"
-
-    # ۲. دانلود دقیق تراک بر اساس Track ID
-    success = download_exact_track_m4a(track_id, filename)
-
-    if not success or not os.path.exists(filename) or os.path.getsize(filename) < 1500000:
-        logger.error(f"[LOG TERMINAL] 🔴 دانلود M4A ناموفق بود.")
-        try:
-            bot.edit_message_text("❌ متأسفانه در دانلود مستقیم فایل مشکلی پیش آمد. لطفاً مجدداً امتحان کنید.", chat_id, status_msg.message_id)
-        except Exception: pass
-        if os.path.exists(filename): os.remove(filename)
-        return
-
-    # ۳. حک کردن کاور HD و متادیتا روی M4A
-    embed_cover_and_tags_m4a(filename, display_title, display_artist, cover_url)
-
-    file_size_mb = os.path.getsize(filename) / (1024 * 1024)
-    logger.info(f"[LOG TERMINAL] ✅ فایل نهایی M4A آماده شد، حجم: {file_size_mb:.2f} MB")
-
-    # ۴. ارسال کاور
-    if cover_url:
-        try:
-            bot.send_photo(chat_id, cover_url, caption=f"🖼 <b>کاور رسمی: {html.escape(display_title)} - {html.escape(display_artist)}</b>")
-        except Exception as e:
-            logger.warning(f"[LOG TERMINAL] ⚠️ خطا در ارسال عکس کاور: {e}")
-
-    # ۵. ارسال فایل اصلی M4A
-    try:
-        try:
-            bot.edit_message_text("📤 <b>در حال آپلود فایل M4A به تلگرام...</b>", chat_id, status_msg.message_id)
-        except Exception: pass
-
-        with open(filename, 'rb') as audio_file:
-            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 <b>{html.escape(display_artist)}</b>\n\n✨ <i>فرمت صوتی عالی M4A (AAC 320k) - استخراج شده مستقیم بر اساس Track ID</i>"
-            bot.send_audio(
-                chat_id=chat_id,
-                audio=audio_file,
-                caption=caption,
-                title=display_title,
-                performer=display_artist
-            )
+            data = res.json()
+            title = data.get("title", "")
+            artist = data.get("author_name", "")
             
-        logger.info(f"[LOG TERMINAL] 🎉 ارسال فایل با موفقیت انجام شد!")
-        try: bot.delete_message(chat_id, status_msg.message_id)
-        except Exception: pass
+            if " - " in title and not artist:
+                parts = title.split(" - ", 1)
+                artist, title = parts[0].strip(), parts[1].strip()
 
+            search_query = f"{artist} {title}".strip()
+            logger.info(f"🔎 جستجوی اپل موزیک برای: {search_query}")
+            
+            # جستجو در iTunes API رسمی و رایگان
+            itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(search_query)}&entity=song&limit=1"
+            it_res = requests.get(itunes_url, timeout=5)
+            if it_res.status_code == 200:
+                results = it_res.json().get("results", [])
+                if results:
+                    track_url = results[0].get("trackViewUrl")
+                    logger.info(f"✅ لینک اپل موزیک یافت شد: {track_url}")
+                    return track_url
     except Exception as e:
-        logger.error(f"[LOG TERMINAL] 🔴 خطا در ارسال فایل: {e}", exc_info=True)
+        logger.error(f"⚠️ خطا در تبدیل اسپاتیفای به اپل موزیک: {e}")
+    
+    return None
+
+# ============================================================
+# هندلر ربات تلگرام اصلی (دریافت پیام از کاربر)
+# ============================================================
+@bot_app.on_message(filters.command("start"))
+async def start_handler(client: Client, message: Message):
+    await message.reply_text(
+        f"سلام **{message.from_user.first_name}** عزیز 👋\n\n"
+        "🎵 **ربات دانلود مستقیم کیفیت استودیویی (Lossless / ALAC / AAC 256k)**\n\n"
+        "لینک **اسپاتیفای** یا **اپل موزیک** را بفرستید تا فایل اصلی با بالاترین کیفیت کیفیت ارسال شود."
+    )
+
+@bot_app.on_message(filters.text & filters.private)
+async def handle_user_link(client: Client, message: Message):
+    text = message.text.strip()
+    chat_id = message.chat.id
+
+    apple_url = None
+
+    if "music.apple.com" in text:
+        apple_url = text
+    elif "spotify.com" in text:
+        status_msg = await message.reply_text("🔎 **در حال تبدیل لینک اسپاتیفای به اپل موزیک...**")
+        apple_url = spotify_to_apple_music(text)
+        if not apple_url:
+            await status_msg.edit_text("❌ متأسفانه این اثر در اپل موزیک یافت نشد.")
+            return
+        await status_msg.delete()
+    else:
+        await message.reply_text("❌ لطفاً یک لینک معتبر از اسپاتیفای یا اپل موزیک ارسال کنید.")
+        return
+
+    status = await message.reply_text("🚀 **در حال ارسال به موتور استخراج کیفیت اصلی ALAC/Lossless...**")
+
+    try:
+        # ۱. ارسال لینک از طریق اکانت واسط به ربات AppleMusic_DL_bot
+        sent_msg = await user_app.send_message(TARGET_BOT, apple_url)
         
-    finally:
-        if os.path.exists(filename):
+        # ذخیره ثبت درخواست
+        pending_requests[sent_msg.id] = {
+            "user_chat_id": chat_id,
+            "status_msg_id": status.id,
+            "time": asyncio.get_event_loop().time()
+        }
+        
+    except Exception as e:
+        logger.error(f"🔴 خطا در ارتباط با اکانت واسط: {e}")
+        await status.edit_text("❌ خطایی در سیستم واسط رخ داد. لطفا دوباره تلاش کنید.")
+
+# ============================================================
+# هندلر اکانت واسط (UserBot) برای دریافت پاسخ از @AppleMusic_DL_bot
+# ============================================================
+@user_app.on_message(filters.chat(TARGET_BOT))
+async def handle_target_bot_response(client: Client, message: Message):
+    logger.info(f"📩 دریافت پاسخ جدید از {TARGET_BOT}")
+
+    # ۱. اگر ربات هدف دکمه‌های شیشه‌ای کیفیت فرستاد
+    if message.reply_markup and message.reply_markup.inline_keyboard:
+        logger.info("🔘 دکمه‌های انتخاب کیفیت دریافت شد. در حال کلیک خودکار...")
+        clicked = False
+        
+        for row in message.reply_markup.inline_keyboard:
+            for btn in row:
+                # جستجو برای دکمه کیفیت ALAC یا AAC
+                if PREFERRED_QUALITY.lower() in btn.text.lower() or "alac" in btn.text.lower() or "lossless" in btn.text.lower():
+                    try:
+                        await user_app.request_callback_answer(
+                            chat_id=message.chat.id,
+                            message_id=message.id,
+                            callback_data=btn.callback_data
+                        )
+                        logger.info(f"✅ دکمه '{btn.text}' با موفقیت کلیک شد.")
+                        clicked = True
+                        break
+                    except Exception as e:
+                        logger.error(f"⚠️ خطا در کلیک دکمه: {e}")
+            if clicked:
+                break
+
+        # اگر کیفیت پیش‌فرض پیدا نشد، روی دکمه اول کلیک کن
+        if not clicked and message.reply_markup.inline_keyboard[0]:
+            first_btn = message.reply_markup.inline_keyboard[0][0]
             try:
-                os.remove(filename)
-                logger.info(f"[LOG TERMINAL] 🧹 فایل موقت پاکسازی شد.")
+                await user_app.request_callback_answer(
+                    chat_id=message.chat.id,
+                    message_id=message.id,
+                    callback_data=first_btn.callback_data
+                )
+                logger.info(f"✅ دکمه پیش‌فرض '{first_btn.text}' کلیک شد.")
             except Exception: pass
 
-# ============================================================
-# اجرای ربات
-# ============================================================
-if __name__ == "__main__":
-    logger.info(f"Exact M4A Bot V{VERSION} Started!")
-    
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-    except Exception: pass
+    # ۲. اگر ربات هدف فایل صوتی را فرستاد
+    elif message.audio or message.document:
+        logger.info("🎵 فایل صوتی اصلی دریافت شد! در حال ارسال به کاربر...")
+        
+        # یافتن آخرین کاربر درخواست‌کننده
+        if pending_requests:
+            req_key = list(pending_requests.keys())[-1]
+            req_info = pending_requests.pop(req_key)
+            
+            user_chat_id = req_info["user_chat_id"]
+            status_msg_id = req_info["status_msg_id"]
 
-    while True:
-        try:
-            bot.infinity_polling(skip_pending=True, none_stop=True, timeout=30)
-        except ApiTelegramException as e:
-            if e.error_code == 409:
-                time.sleep(3)
-            else:
-                time.sleep(2)
-        except Exception as e:
-            time.sleep(2)
+            try:
+                # حذف پیام در حال پردازش
+                await bot_app.delete_messages(user_chat_id, status_msg_id)
+            except Exception: pass
+
+            # ارسال خود فایل برای کاربر
+            await user_app.copy_message(
+                chat_id=user_chat_id,
+                from_chat_id=message.chat.id,
+                message_id=message.id,
+                caption="💎 **کیفیت استودیویی اورجینال (ALAC / Lossless)**"
+            )
+            logger.info(f"🎉 فایل با موفقیت برای کاربر {user_chat_id} ارسال شد.")
+
+# ============================================================
+# استارت همزمان کلاینت‌ها
+# ============================================================
+async def main():
+    await bot_app.start()
+    await user_app.start()
+    logger.info("🚀 ربات واسط و کلاینت UserBot با موفقیت روشن شدند!")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
 
