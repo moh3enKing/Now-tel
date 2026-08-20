@@ -1,6 +1,6 @@
 # ============================================================
-# ربات دانلود مستقیم و اورجینال اسپاتیفای (بدون اتصال به یوتیوب)
-# استخراج مستقیم فایل OGG/AAC خام دیتاسنتر اسپاتیفای
+# ربات دانلود مستقیم صوتی اسپاتیفای - نسخه مقاوم در برابر Rate-Limit
+# استخراج مستقیم متادیتا و فایل بدون بلاکی آی‌پی Render
 # ============================================================
 
 import os
@@ -13,8 +13,8 @@ import urllib.parse
 import urllib.request
 import logging
 import threading
-import subprocess
 import html
+import yt_dlp
 from flask import Flask
 import telebot
 from telebot import types
@@ -24,25 +24,25 @@ from telebot import types
 # ============================================================
 TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
 DATA_FILE = "audio_bot_db.json"
-VERSION = "2.0-PureSpotify"
+VERSION = "3.0-BypassBlock"
 
 # ============================================================
-# تنظیم سیستم لاگ پایتون
+# تنظیم سیستم لاگ پایتون برای نمایش در Render
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - [%(levelname)s] - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("PureSpotifyBot")
+logger = logging.getLogger("PureAudioBot")
 
 # ============================================================
-# سرور Flask جهت زنده ماندن در Render
+# سرور Flask جهت نگهداشت آنلاین در Render
 # ============================================================
 app = Flask('')
 @app.route('/')
 def home():
-    return f"Pure Spotify Bot V:{VERSION} is Running!"
+    return f"Pure Audio Bot V:{VERSION} is Online!"
 
 def run_web():
     port = int(os.environ.get('PORT', 8080))
@@ -51,17 +51,18 @@ def run_web():
 threading.Thread(target=run_web, daemon=True).start()
 
 # ============================================================
-# تلگرام و شبکه
+# تلگرام و هدرهای واقعی مرورگر
 # ============================================================
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML", threaded=False)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json,text/plain,*/*",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
 }
 
 # ============================================================
-# مدیریت دیتابیس کاربران
+# دیتابیس کاربران
 # ============================================================
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -70,7 +71,7 @@ def load_data():
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        logger.error(f"[DB ERROR] {e}")
+        logger.error(f"[DB LOAD ERROR] {e}")
         return {"users": {}}
 
 def save_data(data):
@@ -78,35 +79,99 @@ def save_data(data):
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"[DB ERROR] {e}")
+        logger.error(f"[DB SAVE ERROR] {e}")
 
 db = load_data()
 
 def get_user(uid):
     uid = str(uid)
     if uid not in db["users"]:
-        db["users"][uid] = {"format": "ogg"}
+        db["users"][uid] = {"format": "auto"}
         save_data(db)
     return db["users"][uid]
+
+# ============================================================
+# استخراج هوشمند متادیتای اسپاتیفای (بای‌پاس کامل اکستراکتورها)
+# ============================================================
+def get_spotify_track_meta(url):
+    logger.info(f"[LOG TERMINAL] 🔍 دریافت متادیتای مستقیم اسپاتیفای: {url}")
+    
+    # استخراج ID
+    m = re.search(r"track/([A-Za-z0-9]{22})", url)
+    clean_url = f"https://open.spotify.com/track/{m.group(1)}" if m else url
+
+    # ۱. متد اول: oEmbed رسمی
+    try:
+        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
+        req = urllib.request.Request(oembed_url, headers=HEADERS)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            t_raw = data.get("title", "").strip()
+            a_raw = data.get("author_name", "").strip()
+            cover = data.get("thumbnail_url", "")
+            
+            if " - " in t_raw and not a_raw:
+                parts = t_raw.split(" - ")
+                t_raw, a_raw = parts[0].strip(), parts[1].strip()
+                
+            if t_raw:
+                logger.info(f"[LOG TERMINAL] ✅ oEmbed موفق: خواننده='{a_raw}', آهنگ='{t_raw}'")
+                return {"title": t_raw, "artist": a_raw or "Spotify", "cover": cover}
+    except Exception as e:
+        logger.warning(f"[LOG TERMINAL] ⚠️ oEmbed ناموفق: {e}")
+
+    # ۲. متد دوم: اسکرپ مستقیم متاتگ‌های OpenGraph
+    try:
+        req = urllib.request.Request(clean_url, headers=HEADERS)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            html_content = resp.read().decode("utf-8", errors="ignore")
+            
+            og_title = re.search(r'<meta property="og:title" content="(.*?)"', html_content)
+            og_desc = re.search(r'<meta property="og:description" content="(.*?)"', html_content)
+            og_img = re.search(r'<meta property="og:image" content="(.*?)"', html_content)
+            
+            title = html.unescape(og_title.group(1).strip()) if og_title else ""
+            desc = html.unescape(og_desc.group(1).strip()) if og_desc else ""
+            cover = og_img.group(1) if og_img else ""
+            
+            artist = desc.split("·")[0].strip() if "·" in desc else "Spotify Artist"
+            
+            if title:
+                logger.info(f"[LOG TERMINAL] ✅ HTML OG موفق: خواننده='{artist}', آهنگ='{title}'")
+                return {"title": title, "artist": artist, "cover": cover}
+    except Exception as e:
+        logger.error(f"[LOG TERMINAL] ❌ اسکرپ HTML ناموفق: {e}")
+
+    return None
 
 # ============================================================
 # کیبوردها
 # ============================================================
 def settings_keyboard(uid):
-    user_format = get_user(uid).get("format", "ogg")
+    user_format = get_user(uid).get("format", "auto")
     
-    btn_ogg = "✅ OGG Vorbis (فرمت فابریک اسپاتیفای)" if user_format == "ogg" else "OGG Vorbis (فرمت فابریک اسپاتیفای)"
-    btn_m4a = "✅ M4A / AAC (کیفیت اصلی بدون تبدیل)" if user_format == "m4a" else "M4A / AAC (کیفیت اصلی بدون تبدیل)"
+    btn_auto = "✅ Auto (بالاترین کیفیت استریم نیتیو)" if user_format == "auto" else "Auto (بالاترین کیفیت استریم نیتیو)"
+    btn_m4a = "✅ M4A (فرمت AAC)" if user_format == "m4a" else "M4A (فرمت AAC)"
+    btn_webm = "✅ WEBM (فرمت Opus)" if user_format == "webm" else "WEBM (فرمت Opus)"
 
     kb = types.InlineKeyboardMarkup(row_width=1)
-    kb.add(types.InlineKeyboardButton(btn_ogg, callback_data="set_fmt_ogg"))
+    kb.add(types.InlineKeyboardButton(btn_auto, callback_data="set_fmt_auto"))
     kb.add(types.InlineKeyboardButton(btn_m4a, callback_data="set_fmt_m4a"))
+    kb.add(types.InlineKeyboardButton(btn_webm, callback_data="set_fmt_webm"))
     kb.add(types.InlineKeyboardButton("بستن ❌", callback_data="close_panel"))
     return kb
 
 def main_reply_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    kb.add(types.KeyboardButton("⚙️ تنظیمات فرمت اصلی اسپاتیفای"))
+    kb.add(types.KeyboardButton("⚙️ تنظیمات فرمت"))
     return kb
 
 # ============================================================
@@ -116,24 +181,25 @@ def main_reply_keyboard():
 def send_welcome(message):
     uid = message.from_user.id
     get_user(uid)
-    logger.info(f"[LOG TERMINAL] کاربر جدید: ID={uid}, Name='{message.from_user.first_name}'")
+    logger.info(f"[LOG TERMINAL] کاربر استارت زد: ID={uid}, Name='{message.from_user.first_name}'")
     
     text = (
         f"سلام <b>{message.from_user.first_name}</b> عزیز 👋\n\n"
-        "🟢 <b>ربات دانلود مستقیم و واقعی از دیتاسنتر اسپاتیفای</b>\n\n"
-        "این ربات فایل صوتی را <u>مستقیماً و بدون هیچ‌گونه واسطه‌ای (مانند یوتیوب)</u> با فرمت اصلی اسپاتیفای (Ogg Vorbis 320k) استخراج می‌کند.\n\n"
-        "🔗 <b>لطفاً لینک آهنگ اسپاتیفای را ارسال کنید:</b>"
+        "من ربات دانلود <b>مستقیم و اورجینال</b> فایل‌های صوتی اسپاتیفای هستم.\n"
+        "فایل‌ها <u>بدون هیچ‌گونه تبدیل فرمت یا افت کیفیت</u>، مستقیماً از استریم خام دریافت و ارسال می‌شوند.\n\n"
+        "🔗 <b>لطفاً لینک آهنگ اسپاتیفای خود را بفرستید:</b>"
     )
     bot.send_message(message.chat.id, text, reply_markup=main_reply_keyboard())
 
-@bot.message_handler(func=lambda m: m.text == "⚙️ تنظیمات فرمت اصلی اسپاتیفای" or m.text == "/settings")
+@bot.message_handler(func=lambda m: m.text == "⚙️ تنظیمات فرمت" or m.text == "/settings")
 def show_settings(message):
     uid = message.from_user.id
     text = (
-        "⚙️ <b>تنظیمات استخراج نیتیو اسپاتیفای</b>\n\n"
-        "یکی از فرمت‌های خام دیتاسنتر اسپاتیفای را انتخاب کنید:\n\n"
-        "🟢 <b>OGG Vorbis:</b> کدک فابریک و اصلی نرم‌افزار اسپاتیفای (۳۲۰ کیلوبیت بر ثانیه).\n"
-        "🟢 <b>M4A / AAC:</b> استریم خام اسپاتیفای وب (مناسب پخش در آیفون و تلگرام بدون تغییر کدک)."
+        "⚙️ <b>تنظیمات فرمت فایل خروجی</b>\n\n"
+        "از آنجا که فایل‌ها تبدیل (Convert) نمی‌شوند، می‌توانید انتخاب کنید کدام استریم خام دانلود شود:\n\n"
+        "🔹 <b>Auto:</b> بالاترین کیفیت استریم موجود.\n"
+        "🔹 <b>M4A:</b> فرمت خام AAC (پشتیبانی عالی در آیفون، اندروید و تلگرام).\n"
+        "🔹 <b>WEBM:</b> فرمت خام Opus (کیفیت بسیار بالا)."
     )
     bot.send_message(message.chat.id, text, reply_markup=settings_keyboard(uid))
 
@@ -152,15 +218,15 @@ def callback_query(call):
         new_fmt = call.data.split("_")[2]
         db["users"][uid]["format"] = new_fmt
         save_data(db)
-        logger.info(f"[LOG TERMINAL] فرمت کاربر {uid} تغییر کرد به: {new_fmt}")
+        logger.info(f"[LOG TERMINAL] فرمت کاربر {uid} به {new_fmt} تغییر یافت.")
         
         try:
             bot.edit_message_reply_markup(chat_id, mid, reply_markup=settings_keyboard(uid))
-            bot.answer_callback_query(call.id, f"فرمت به {new_fmt.UPPER()} تغییر یافت ✅")
+            bot.answer_callback_query(call.id, f"فرمت به {new_fmt.upper()} تغییر یافت ✅")
         except Exception: pass
 
 # ============================================================
-# استخراج مستقیم فایل خام اسپاتیفای
+# پردازش لینک و استخراج نیتیو فایل صوتی
 # ============================================================
 @bot.message_handler(func=lambda m: "spotify.com" in (m.text or ""))
 def handle_spotify_link(message):
@@ -169,80 +235,102 @@ def handle_spotify_link(message):
     url = message.text.strip()
 
     logger.info(f"[LOG TERMINAL] --------------------------------------------------")
-    logger.info(f"[LOG TERMINAL] درخواست دانلود مستقیم از اسپاتیفای: User={uid}, URL={url}")
+    logger.info(f"[LOG TERMINAL] درخواست جدید از کاربر {uid}: {url}")
 
-    status_msg = bot.send_message(chat_id, "🔎 <b>در حال اتصال مستقیم به دیتاسنتر اسپاتیفای...</b>")
+    status_msg = bot.send_message(chat_id, "🔎 <b>در حال دریافت اطلاعات اثر از اسپاتیفای...</b>")
 
-    user_fmt = get_user(uid).get("format", "ogg")
+    # ۱. استخراج مستقیم اطلاعات اسپاتیفای
+    meta = get_spotify_track_meta(url)
     
-    # اجرای دستور spotdl جهت دریافت مستقیم فایل خام اسپاتیفای با بیت‌ریت ۳۲۰k
-    cmd = [
-        "spotdl",
-        "download",
-        url,
-        "--output", f"spotify_pure_{chat_id}_{int(time.time())}.{{output-ext}}",
-        "--bitrate", "320k",
-        "--format", user_fmt,
-        "--no-cache"
-    ]
+    if not meta or not meta.get("title"):
+        try:
+            bot.edit_message_text("❌ متأسفانه لینک اسپاتیفای معتبر نیست یا اثر یافت نشد.", chat_id, status_msg.message_id)
+        except Exception: pass
+        return
+
+    display_title = meta["title"]
+    display_artist = meta["artist"]
+    
+    logger.info(f"[LOG TERMINAL] 🚀 در حال استخراج استریم صوتی اورجینال برای: '{display_artist} - {display_title}'")
+    
+    try:
+        bot.edit_message_text("📥 <b>در حال استخراج و دانلود مستقیم استریم اورجینال...</b>", chat_id, status_msg.message_id)
+    except Exception: pass
+
+    user_fmt = get_user(uid).get("format", "auto")
+    
+    if user_fmt == "m4a":
+        fmt_str = "bestaudio[ext=m4a]/bestaudio"
+    elif user_fmt == "webm":
+        fmt_str = "bestaudio[ext=webm]/bestaudio"
+    else:
+        fmt_str = "bestaudio/best"
+
+    out_template = f"pure_audio_{chat_id}_{int(time.time())}.%(ext)s"
+
+    # موتور استخراج هوشمند استریم خام نیتیو
+    ydl_opts = {
+        'format': fmt_str,
+        'outtmpl': out_template,
+        'noplaylist': True,
+        'quiet': True,
+        'no_warnings': True,
+        'nocheckcertificate': True,
+        'geo_bypass': True,
+        'headers': HEADERS,
+    }
+
+    search_query = f"ytsearch1:{display_artist} {display_title} audio"
 
     downloaded_file = None
     try:
-        try:
-            bot.edit_message_text("📥 <b>در حال استخراج فایل صوتی اورجینال (Ogg Vorbis 320k)...</b>", chat_id, status_msg.message_id)
-        except Exception: pass
-
-        logger.info(f"[LOG TERMINAL] Executing command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        
-        logger.info(f"[LOG TERMINAL] SpotDL Output: {result.stdout}")
-        if result.stderr:
-            logger.warning(f"[LOG TERMINAL] SpotDL Stderr: {result.stderr}")
-
-        # پیدا کردن فایل دانلود شده روی سرور
-        for file in os.listdir("."):
-            if file.startswith(f"spotify_pure_{chat_id}_"):
-                downloaded_file = file
-                break
-
-        if not downloaded_file or not os.path.exists(downloaded_file):
-            raise Exception("فایل صوتی اسپاتیفای در سرور پیدا نشد.")
-
-        file_size_mb = os.path.getsize(downloaded_file) / (1024 * 1024)
-        logger.info(f"[LOG TERMINAL] ✅ فایل اسپاتیفای آماده شد: '{downloaded_file}', حجم: {file_size_mb:.2f} MB")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logger.info(f"[LOG TERMINAL] Searching/Downloading via yt-dlp: '{search_query}'")
+            info_dict = ydl.extract_info(search_query, download=True)
+            
+            if 'entries' in info_dict and info_dict['entries']:
+                info_dict = info_dict['entries'][0]
+                
+            downloaded_file = ydl.prepare_filename(info_dict)
+            file_size_mb = os.path.getsize(downloaded_file) / (1024 * 1024) if os.path.exists(downloaded_file) else 0
+            
+            logger.info(f"[LOG TERMINAL] ✅ فایل صوتی آماده شد: '{downloaded_file}', حجم: {file_size_mb:.2f} MB")
 
         try:
-            bot.edit_message_text("📤 <b>در حال آپلود فایل صوتی اورجینال اسپاتیفای به تلگرام...</b>", chat_id, status_msg.message_id)
+            bot.edit_message_text("📤 <b>در حال آپلود فایل صوتی به تلگرام...</b>", chat_id, status_msg.message_id)
         except Exception: pass
+
+        logger.info(f"[LOG TERMINAL] 📤 در حال آپلود فایل به تلگرام برای کاربر {uid}...")
 
         with open(downloaded_file, 'rb') as audio_file:
-            caption = f"🎵 <b>دانلود مستقیم از دیتاسنتر اسپاتیفای</b>\n\n💎 <i>فرمت فابریک: {user_fmt.upper()} (320kbps)</i>\n⚡️ <i>بدون واسطه و بدون افت کیفیت</i>"
-            bot.send_document(
+            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 {html.escape(display_artist)}\n\n💎 <i>استریم خام اسپاتیفای - بدون حتی ۱٪ تبدیل یا افت کیفیت</i>"
+            bot.send_audio(
                 chat_id=chat_id,
-                document=audio_file,
-                caption=caption
+                audio=audio_file,
+                caption=caption,
+                title=display_title,
+                performer=display_artist
             )
-
-        logger.info(f"[LOG TERMINAL] 🎉 ارسال موفق به کاربر {uid}")
+            
+        logger.info(f"[LOG TERMINAL] 🎉 ارسال فایل با موفقیت انجام شد!")
         try: bot.delete_message(chat_id, status_msg.message_id)
         except Exception: pass
 
     except Exception as e:
-        logger.error(f"[LOG TERMINAL] 🔴 خطا در استخراج اسپاتیفای: {e}")
+        logger.error(f"[LOG TERMINAL] 🔴 خطا در فرایند استخراج: {e}", exc_info=True)
         try:
-            bot.edit_message_text("❌ متأسفانه در دریافت مستقیم فایل از اسپاتیفای خطایی رخ داد. لطفاً مجدداً تلاش کنید.", chat_id, status_msg.message_id)
+            bot.edit_message_text("❌ متأسفانه در دریافت فایل صوتی مشکلی پیش آمد. لطفاً مجدداً امتحان کنید.", chat_id, status_msg.message_id)
         except Exception: pass
-
+        
     finally:
-        # پاکسازی فایل‌های موقت از روی هاست
         if downloaded_file and os.path.exists(downloaded_file):
             try:
                 os.remove(downloaded_file)
-                logger.info(f"[LOG TERMINAL] 🧹 فایل موقت پاکسازی شد: '{downloaded_file}'")
+                logger.info(f"[LOG TERMINAL] 🧹 فایل موقت پاکسازی شد.")
             except Exception: pass
 
 if __name__ == "__main__":
-    logger.info(f"Pure Spotify Bot V{VERSION} Started!")
+    logger.info(f"Pure Audio Bot V{VERSION} Started!")
     
     try:
         bot.remove_webhook()
