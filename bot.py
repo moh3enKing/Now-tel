@@ -1,5 +1,5 @@
 # ============================================================
-# ربات دانلود ۳۲۰k اسپاتیفای - همراه با احراز هویت sp_dc
+# ربات دانلود مستقیم ۳۲۰kbps واقعی از سرورهای موزیک (Deezer Engine)
 # ============================================================
 
 import os
@@ -8,29 +8,28 @@ import json
 import sys
 import time
 import ssl
-import urllib.parse
-import urllib.request
 import logging
 import threading
 import html
 import requests
-import yt_dlp
+import urllib.parse
+import urllib.request
 from flask import Flask
 import telebot
-from telebot import types
 from telebot.apihelper import ApiTelegramException
 
-# پکیج تزریق کاور و متادیتا روی فایل MP3
-from mutagen.mp3 import MP3
+# تزریق متادیتا و کاور HD روی MP3
 from mutagen.id3 import ID3, APIC, TIT2, TPE1, TALB, ID3NoHeaderError
+from Crypto.Cipher import Blowfish
 
 # ============================================================
 # تنظیمات اصلی
 # ============================================================
 TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
-SP_DC = "AQCYW2uvKiFwGoA8vfp71CFFAdz2-dSATT2XjXR1WsOfE5Jp1nxJw2CB3cvAUCo4LTyJPVaUNGNCC0jLrQ-sX1YHmJ2t5IXBcA11q6uVm_mKjZ_WgCRAwf93Q4NBtc8fL-188P3Q0GGOnzafelQhEeVbqbulm1_tlcjZ-ba37JIUYT1Orp5vyDeNVljnAPEHMZc2GtlYXzdZmxF6xBs"
+# توکن ARL دیزر برای دسترسی مستقیم به استریم‌های کیفیت بالا (320kbps MP3 / FLAC)
+DEEZER_ARL = "e0b9fae2ed64f52fa4b0cb89c937f3eb30fb8d49830db9dc4d38dca5eb90a3a41b52e2be8efbb081825838d76d4948a3c861e6fa0bd4fca14dfd5fa7b0bd1929"
 DATA_FILE = "audio_bot_db.json"
-VERSION = "12.0-AuthHQ"
+VERSION = "15.0-DeezerHQEngine"
 
 # ============================================================
 # تنظیم سیستم لاگ
@@ -40,7 +39,7 @@ logging.basicConfig(
     format="%(asctime)s - [%(levelname)s] - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("AuthAudioBot")
+logger = logging.getLogger("DeezerHQBot")
 
 # ============================================================
 # سرور Flask جهت نگهداشت آنلاین در Render
@@ -48,7 +47,7 @@ logger = logging.getLogger("AuthAudioBot")
 app = Flask('')
 @app.route('/')
 def home():
-    return f"Spotify Audio Bot V:{VERSION} is Online!"
+    return f"Spotify-Deezer HQ Audio Bot V:{VERSION} is Online!"
 
 def run_web():
     port = int(os.environ.get('PORT', 8080))
@@ -57,92 +56,39 @@ def run_web():
 threading.Thread(target=run_web, daemon=True).start()
 
 # ============================================================
-# تلگرام و هدرهای شبکه
+# تلگرام و هدرها
 # ============================================================
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML", threaded=False)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
 # ============================================================
-# دیتابیس
+# کلیدهای رمزگشایی فایل‌های Deezer
 # ============================================================
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {"users": {}}
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"[DB LOAD ERROR] {e}")
-        return {"users": {}}
+def get_blowfish_key(track_id):
+    SECRET = "g42fzcuhw2022bcd"
+    md5_id = requests.utils.hashlib.md5(str(track_id).encode('utf-8')).hexdigest()
+    key = ""
+    for i in range(16):
+        key += chr(ord(md5_id[i]) ^ ord(md5_id[i + 16]) ^ ord(SECRET[i]))
+    return key.encode('utf-8')
 
-def save_data(data):
-    try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"[DB SAVE ERROR] {e}")
-
-db = load_data()
-
-def get_user(uid):
-    uid = str(uid)
-    if uid not in db["users"]:
-        db["users"][uid] = {"format": "mp3"}
-        save_data(db)
-    return db["users"][uid]
+def decrypt_chunk(chunk, key):
+    cipher = Blowfish.new(key, Blowfish.MODE_CBC, bytes([0, 1, 2, 3, 4, 5, 6, 7]))
+    return cipher.decrypt(chunk)
 
 # ============================================================
-# دریافت توکن دسترسی با استفاده از sp_dc
-# ============================================================
-def get_spotify_access_token():
-    try:
-        url = "https://open.spotify.com/get_access_token"
-        cookies = {"sp_dc": SP_DC}
-        resp = requests.get(url, cookies=cookies, headers=HEADERS, timeout=10)
-        if resp.status_code == 200:
-            token = resp.json().get("accessToken")
-            if token:
-                return token
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ خطا در دریافت Access Token با sp_dc: {e}")
-    return None
-
-# ============================================================
-# استخراج متادیتای اسپاتیفای (نام خواننده، عنوان آهنگ و کاور HD)
+# استخراج کامل متادیتای اسپاتیفای
 # ============================================================
 def get_spotify_track_meta(url):
     logger.info(f"[LOG TERMINAL] 🔍 دریافت متادیتای اسپاتیفای: {url}")
-    
     m = re.search(r"track/([A-Za-z0-9]{22})", url)
     track_id = m.group(1) if m else None
     clean_url = f"https://open.spotify.com/track/{track_id}" if track_id else url
 
-    # ۱. تلاش برای دریافت از API رسمی اسپاتیفای با توکن sp_dc
-    if track_id:
-        token = get_spotify_access_token()
-        if token:
-            try:
-                api_url = f"https://api.spotify.com/v1/tracks/{track_id}"
-                auth_headers = {**HEADERS, "Authorization": f"Bearer {token}"}
-                res = requests.get(api_url, headers=auth_headers, timeout=10)
-                if res.status_code == 200:
-                    data = res.json()
-                    title = data.get("name", "")
-                    artists = ", ".join([a.get("name", "") for a in data.get("artists", [])])
-                    images = data.get("album", {}).get("images", [])
-                    cover = images[0]["url"] if images else ""
-                    
-                    logger.info(f"[LOG TERMINAL] ✅ استخراج متادیتا از API رسمی اسپاتیفای: خواننده='{artists}', آهنگ='{title}'")
-                    return {"track_id": track_id, "title": title, "artist": artists, "cover": cover}
-            except Exception as e:
-                logger.warning(f"[LOG TERMINAL] ⚠️ استفاده از Spotify Web API ناموفق بود: {e}")
-
-    # ۲. Fallback: اسکرپ مستقیم متاتگ‌های اسپاتیفای
     title, artist, cover = "", "", ""
     try:
         req = urllib.request.Request(clean_url, headers=HEADERS)
@@ -157,62 +103,109 @@ def get_spotify_track_meta(url):
             og_desc = re.search(r'<meta property="og:description" content="(.*?)"', html_content)
             og_img = re.search(r'<meta property="og:image" content="(.*?)"', html_content)
             
-            if og_title: title = html.unescape(og_title.group(1).strip())
+            if og_title:
+                raw_t = html.unescape(og_title.group(1).strip())
+                if " - " in raw_t:
+                    parts = raw_t.split(" - ", 1)
+                    artist, title = parts[0].strip(), parts[1].strip()
+                else:
+                    title = raw_t
+
             if og_img: cover = og_img.group(1)
             
             if og_desc:
                 desc = html.unescape(og_desc.group(1).strip())
-                parts = [p.strip() for p in desc.split("·") if p.strip()]
-                if parts:
-                    artist = parts[0]
-                    if artist.lower() in ["song", "single", "album"] and len(parts) > 1:
-                        artist = parts[1]
+                parts = [p.strip() for p in re.split(r'[·•:-]', desc) if p.strip()]
+                for p in parts:
+                    if p.lower() not in ["song", "single", "album", "listen on spotify"] and p.lower() != title.lower() and not p.isdigit():
+                        if not artist:
+                            artist = p
+                            break
 
-            if title and artist and artist.lower() not in ["song", "single", "album"]:
-                logger.info(f"[LOG TERMINAL] ✅ HTML Scraping موفق: خواننده='{artist}', آهنگ='{title}'")
-                return {"track_id": track_id, "title": title, "artist": artist, "cover": cover}
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ HTML Scraping ناموفق: {e}")
-
-    # ۳. Fallback به oEmbed
-    try:
-        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
-        req = urllib.request.Request(oembed_url, headers=HEADERS)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            t_raw = data.get("title", "").strip()
-            a_raw = data.get("author_name", "").strip()
-            cover_raw = data.get("thumbnail_url", "")
-            
-            if " - " in t_raw and not a_raw:
-                parts = t_raw.split(" - ")
-                t_raw, a_raw = parts[0].strip(), parts[1].strip()
-                
-            title = title or t_raw
-            artist = artist or a_raw
-            cover = cover or cover_raw
-            
             if title:
-                logger.info(f"[LOG TERMINAL] ✅ oEmbed موفق: خواننده='{artist}', آهنگ='{title}'")
-                return {"track_id": track_id, "title": title, "artist": artist, "cover": cover}
+                logger.info(f"[LOG TERMINAL] ✅ استخراج متادیتا موفق: خواننده='{artist}', آهنگ='{title}'")
+                return {"title": title, "artist": artist, "cover": cover}
     except Exception as e:
-        logger.error(f"[LOG TERMINAL] ❌ oEmbed ناموفق: {e}")
-
-    if title:
-        return {"track_id": track_id, "title": title, "artist": artist, "cover": cover}
+        logger.warning(f"[LOG TERMINAL] ⚠️ خطا در استخراج متادیتای اسپاتیفای: {e}")
 
     return None
 
 # ============================================================
-# حک کردن کاور رسمی HD و متادیتا روی فایل صوتی (ID3 Tagging)
+# دریافت استریم ۳۲۰kbps از سرور Deezer
+# ============================================================
+def download_deezer_hq(artist, title, output_path):
+    try:
+        session = requests.Session()
+        session.cookies.set("arl", DEEZER_ARL)
+        
+        # ۱. دریافت Sid و User Token از Deezer
+        user_resp = session.post("https://www.deezer.com/ajax/gw-light.php?method=deezer.getUserData&api_version=1.0&api_token=", headers=HEADERS, timeout=10)
+        user_data = user_resp.json()
+        api_token = user_data.get("results", {}).get("checkForm")
+
+        # ۲. جستجوی آهنگ در Deezer
+        query = f"{artist} {title}".strip()
+        search_res = session.get(f"https://api.deezer.com/search?q={urllib.parse.quote(query)}", headers=HEADERS, timeout=10).json()
+        tracks = search_res.get("data", [])
+
+        if not tracks:
+            logger.warning("[LOG TERMINAL] ⚠️ آهنگ در Deezer یافت نشد.")
+            return False
+
+        track_info = tracks[0]
+        deezer_id = track_info["id"]
+
+        # ۳. دریافت اطلاعات استریم مستقیم با کیفیت MP3 320kbps
+        track_req = session.post(
+            f"https://www.deezer.com/ajax/gw-light.php?method=song.getData&api_version=1.0&api_token={api_token}",
+            json={"sng_id": deezer_id},
+            headers=HEADERS,
+            timeout=10
+        ).json()
+
+        sng_data = track_req.get("results", {})
+        md5_origin = sng_data.get("MD5_ORIGIN")
+        media_version = sng_data.get("MEDIA_VERSION")
+        format_code = "3" # کد 3 یعنی MP3 320kbps
+
+        # ساخت URL دانلود مستقیم سرور
+        url_part = f"{md5_origin}¤{format_code}¤{deezer_id}¤{media_version}".encode('utf-8')
+        md5_part = requests.utils.hashlib.md5(url_part).hexdigest()
+        
+        # کلید Blowfish جهت رمزگشایی
+        bf_key = get_blowfish_key(deezer_id)
+        
+        stream_url = f"https://e-cdns-proxy-{md5_origin[0]}.dzcdn.net/mobile/1/{md5_part}"
+        
+        logger.info(f"[LOG TERMINAL] ⚡️ در حال دریافت بایت‌های اصلی ۳۲۰kbps از سرور Deezer...")
+        
+        # ۴. دانلود و رمزگشایی چانک‌های فایل صوتی
+        r = session.get(stream_url, stream=True, timeout=30)
+        if r.status_code == 200:
+            with open(output_path, "wb") as f:
+                i = 0
+                for chunk in r.iter_content(chunk_size=2048):
+                    if not chunk:
+                        continue
+                    if i % 3 == 0 and len(chunk) == 2048:
+                        chunk = decrypt_chunk(chunk, bf_key)
+                    f.write(chunk)
+                    i += 1
+
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 100000:
+                logger.info("[LOG TERMINAL] ✅ دانلود مستقیم ۳۲۰kbps از سرور با موفقیت انجام شد.")
+                return True
+
+    except Exception as e:
+        logger.error(f"[LOG TERMINAL] 🔴 خطا در دانلود از Deezer: {e}")
+
+    return False
+
+# ============================================================
+# حک کردن کاور رسمی HD و متادیتا روی MP3
 # ============================================================
 def embed_cover_and_tags(mp3_path, title, artist, cover_url):
     try:
-        logger.info(f"[LOG TERMINAL] 🎨 در حال حک کردن کاور و متادیتا روی فایل MP3...")
         try:
             audio = ID3(mp3_path)
         except ID3NoHeaderError:
@@ -235,76 +228,18 @@ def embed_cover_and_tags(mp3_path, title, artist, cover_url):
                     )
                 )
         audio.save(mp3_path)
-        logger.info(f"[LOG TERMINAL] ✅ کاور و متادیتای ID3 با موفقیت روی فایل حک شد.")
     except Exception as e:
-        logger.error(f"[LOG TERMINAL] ⚠️ خطا در حک کاور روی فایل: {e}")
-
-# ============================================================
-# استخراج سریع استریم صوتی ۳۲۰k
-# ============================================================
-def download_audio_stream_320k(artist, title, output_path):
-    logger.info(f"[LOG TERMINAL] 🟢 شروع دانلود استریم ۳۲۰k برای: '{artist} - {title}'")
-
-    search_term = f"{artist} {title}".strip()
-
-    # موتور ۱: JioSaavn High Quality 320kbps API
-    try:
-        search_query = urllib.parse.quote(search_term)
-        search_api = f"https://saavn.me/search/songs?query={search_query}&page=1&limit=1"
-        res = requests.get(search_api, headers=HEADERS, timeout=15)
-        if res.status_code == 200:
-            results = res.json().get("data", {}).get("results", [])
-            if results:
-                dl_urls = results[0].get("downloadUrl", [])
-                if dl_urls:
-                    dl_320 = dl_urls[-1].get("link") # کیفیت ۳۲۰kbps
-                    if dl_320:
-                        logger.info(f"[LOG TERMINAL] ⚡️ دریافت مستقیم استریم ۳۲۰k: {dl_320}")
-                        r = requests.get(dl_320, stream=True, timeout=30)
-                        if r.status_code == 200:
-                            with open(output_path, "wb") as f:
-                                for chunk in r.iter_content(chunk_size=8192):
-                                    if chunk: f.write(chunk)
-                            if os.path.exists(output_path) and os.path.getsize(output_path) > 100000:
-                                logger.info(f"[LOG TERMINAL] ✅ دانلود فایل ۳۲۰k انجام شد.")
-                                return True
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ Engine 1 ناموفق: {e}")
-
-    # موتور ۲: yt-dlp iOS Web Client Bypass
-    try:
-        ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio/best',
-            'outtmpl': output_path,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'nocheckcertificate': True,
-            'extractor_args': {'youtube': {'player_client': ['ios', 'android']}},
-            'headers': HEADERS,
-        }
-        query = f"scsearch1:{search_term}"
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"[LOG TERMINAL] Trying search via yt-dlp SoundCloud: '{query}'")
-            ydl.download([query])
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 100000:
-                logger.info(f"[LOG TERMINAL] ✅ دانلود از موتور ۲ انجام شد.")
-                return True
-    except Exception as e:
-        logger.warning(f"[LOG TERMINAL] ⚠️ Engine 2 ناموفق: {e}")
-
-    return False
+        logger.error(f"[LOG TERMINAL] ⚠️ خطا در حک کاور: {e}")
 
 # ============================================================
 # دستورات ربات
 # ============================================================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    get_user(message.from_user.id)
     text = (
         f"سلام <b>{message.from_user.first_name}</b> عزیز 👋\n\n"
-        "🟢 <b>ربات دانلود موزیک اسپاتیفای با کیفیت ۳۲۰k</b>\n\n"
-        "لینک اسپاتیفای را بفرستید تا فایل ۳۲۰k همراه با کاور HD اصلی ارسال شود.\n\n"
+        "🟢 <b>ربات دانلود مستقیم فایل صوتی با کیفیت ۳۲۰kbps اصلی</b>\n\n"
+        "بدون استفاده از یوتیوب یا ساندکلاد، فایل‌های ۳۲۰k واقعی مستقیماً از CDN سرور دانلود می‌شوند.\n\n"
         "🔗 <b>لطفاً لینک آهنگ اسپاتیفای را ارسال کنید:</b>"
     )
     bot.send_message(message.chat.id, text)
@@ -323,7 +258,7 @@ def handle_spotify_link(message):
 
     status_msg = bot.send_message(chat_id, "🔎 <b>در حال استخراج متادیتای دقیق اسپاتیفای...</b>")
 
-    # ۱. استخراج متادیتا و کاور HD
+    # ۱. استخراج متادیتا
     meta = get_spotify_track_meta(url)
     
     if not meta or not meta.get("title"):
@@ -335,31 +270,31 @@ def handle_spotify_link(message):
     display_title = meta["title"]
     display_artist = meta["artist"] or "Spotify Artist"
     cover_url = meta.get("cover")
-    
+
     try:
-        bot.edit_message_text(f"📥 <b>در حال دانلود «{html.escape(display_artist)} - {html.escape(display_title)}» با کیفیت ۳۲۰k...</b>", chat_id, status_msg.message_id)
+        bot.edit_message_text(f"📥 <b>در حال دانلود مستقیم «{html.escape(display_artist)} - {html.escape(display_title)}» با کیفیت ۳۲۰kbps اصلی...</b>", chat_id, status_msg.message_id)
     except Exception: pass
 
-    filename = f"spotify_{chat_id}_{int(time.time())}.mp3"
+    filename = f"track_{chat_id}_{int(time.time())}.mp3"
 
-    # ۲. دانلود استریم ۳۲۰k
-    success = download_audio_stream_320k(display_artist, display_title, filename)
+    # ۲. دانلود ۳۲۰k مستقیم از سرور
+    success = download_deezer_hq(display_artist, display_title, filename)
 
     if not success or not os.path.exists(filename) or os.path.getsize(filename) < 100000:
-        logger.error(f"[LOG TERMINAL] 🔴 دانلود فایل صوتی ناموفق بود.")
+        logger.error(f"[LOG TERMINAL] 🔴 دانلود فایل ۳۲۰k ناموفق بود.")
         try:
-            bot.edit_message_text("❌ متأسفانه در دریافت فایل صوتی خطایی رخ داد. لطفاً مجدداً امتحان کنید.", chat_id, status_msg.message_id)
+            bot.edit_message_text("❌ متأسفانه اثر مورد نظر در سرور با کیفیت ۳۲۰k یافت نشد.", chat_id, status_msg.message_id)
         except Exception: pass
         if os.path.exists(filename): os.remove(filename)
         return
 
-    # ۳. حک کردن کاور HD اسپاتیفای و تگ‌های اصلی روی فایل صوتی
+    # ۳. حک کردن کاور اصلی اسپاتیفای و متادیتا روی فایل
     embed_cover_and_tags(filename, display_title, display_artist, cover_url)
 
     file_size_mb = os.path.getsize(filename) / (1024 * 1024)
-    logger.info(f"[LOG TERMINAL] ✅ فایل نهایی آماده شد: '{filename}', حجم: {file_size_mb:.2f} MB")
+    logger.info(f"[LOG TERMINAL] ✅ فایل نهایی با کیفیت ۳۲۰k آماده شد، حجم: {file_size_mb:.2f} MB")
 
-    # ۴. ارسال عکس کاور جداگانه
+    # ۴. ارسال کاور جداگانه
     if cover_url:
         try:
             bot.send_photo(chat_id, cover_url, caption=f"🖼 <b>کاور رسمی: {html.escape(display_title)} - {html.escape(display_artist)}</b>")
@@ -368,13 +303,11 @@ def handle_spotify_link(message):
 
     try:
         try:
-            bot.edit_message_text("📤 <b>در حال آپلود فایل صوتی به تلگرام...</b>", chat_id, status_msg.message_id)
+            bot.edit_message_text("📤 <b>در حال آپلود فایل صوتی اصلی به تلگرام...</b>", chat_id, status_msg.message_id)
         except Exception: pass
 
-        logger.info(f"[LOG TERMINAL] 📤 در حال ارسال فایل صوتی به تلگرام برای کاربر {uid}...")
-
         with open(filename, 'rb') as audio_file:
-            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 <b>{html.escape(display_artist)}</b>\n\n💎 <i>کیفیت صوتی ۳۲۰kbps - همراه با کاور حک‌شده روی فایل</i>"
+            caption = f"🎵 <b>{html.escape(display_title)}</b>\n🎤 <b>{html.escape(display_artist)}</b>\n\n💎 <i>کیفیت صوتی اصلی MP3 320kbps - دانلود مستقیم از سرور CDN</i>"
             bot.send_audio(
                 chat_id=chat_id,
                 audio=audio_file,
@@ -398,10 +331,10 @@ def handle_spotify_link(message):
             except Exception: pass
 
 # ============================================================
-# اجرای ربات با مدیریت ۴۰۹
+# اجرای ربات
 # ============================================================
 if __name__ == "__main__":
-    logger.info(f"Spotify Bot V{VERSION} Started!")
+    logger.info(f"Deezer HQ Bot V{VERSION} Started!")
     
     try:
         bot.remove_webhook()
@@ -418,3 +351,4 @@ if __name__ == "__main__":
                 time.sleep(2)
         except Exception as e:
             time.sleep(2)
+
