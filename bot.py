@@ -9,7 +9,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
 
-BOT_TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"  # ⚠️ حتماً عوضش کن
+BOT_TOKEN = "8135900333:AAEaqN-IyOANOGpqwIGqernMM_0piAjefXA"  # ⚠️ حتماً عوضش کن
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
