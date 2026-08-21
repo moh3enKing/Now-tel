@@ -10,11 +10,11 @@ import requests
 import cloudscraper
 from flask import Flask
 
-# غیرفعال کردن کامل هشدارهای SSL
+# غیرفعال کردن هشدارهای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --------------------------------------------------
-# تنظیمات سیستم لاگ‌گیری دقیق در ترمینال Render
+# تنظیمات لاگ‌گیری ترمینال Render
 # --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
@@ -40,13 +40,13 @@ def run_web_server():
     app.run(host="0.0.0.0", port=port)
 
 # --------------------------------------------------
-# توابع ارسال پیام به تلگرام
+# توابع ارسال پیام تلگرام
 # --------------------------------------------------
 def send_message(chat_id, text):
     try:
         requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
     except Exception as e:
-        logger.error(f"خطا در ارسال پیام تلگرام: {e}")
+        logger.error(f"خطا در ارسال پیام: {e}")
 
 def send_document(chat_id, file_bytes, filename, caption):
     try:
@@ -54,16 +54,15 @@ def send_document(chat_id, file_bytes, filename, caption):
         data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
         requests.post(BASE_URL + "sendDocument", data=data, files=files)
     except Exception as e:
-        logger.error(f"خطا در ارسال سند تلگرام: {e}")
+        logger.error(f"خطا در ارسال فایل: {e}")
 
 # --------------------------------------------------
-# استخراج هوشمند و ۱۰۰٪ دقیق متاداده اسپاتیفای
+# استخراج متاداده اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
     logger.info(f"دریافت متاداده برای: {spotify_url}")
     track_name, artist_name = None, None
 
-    # روش ۱: OEmbed API
     try:
         clean_url = spotify_url.split('?')[0]
         oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
@@ -81,18 +80,14 @@ def get_spotify_track_info(spotify_url: str):
                 track_name = parts[1].strip()
             else:
                 track_name = title
-                if author:
-                    artist_name = author
+                if author: artist_name = author
     except Exception as e:
         logger.error(f"خطا در OEmbed: {e}")
 
-    # روش ۲: اسکرپر مستقیم صفحه اسپاتیفای (تضمینی برای موزیک‌های ایرانی)
     if not artist_name or artist_name == "Unknown Artist":
         try:
             scraper = cloudscraper.create_scraper()
             res = scraper.get(spotify_url, timeout=12)
-            
-            # الگوی عنوان اسپاتیفای: "Ye Rooz - song and lyrics by Hayedeh | Spotify"
             m = re.search(r'<title>(.*?) - song and lyrics by (.*?) \| Spotify</title>', res.text)
             if m:
                 track_name = m.group(1).strip()
@@ -108,15 +103,24 @@ def get_spotify_track_info(spotify_url: str):
     logger.info(f"متاداده استخراج شده -> خواننده: '{artist_name}' | آهنگ: '{track_name}'")
     return track_name, artist_name
 
+def extract_urls_from_text(text_content):
+    """استخراج لینک‌های مستقیم صوتی FLAC / MP3 از متن یا HTML"""
+    urls = re.findall(r'https?://[^\s"\'<>]+', text_content)
+    audio_urls = []
+    for u in urls:
+        if any(ext in u.lower() for ext in ['.flac', '.mp3', 'download', 'stream', 'cdn']):
+            audio_urls.append(u)
+    return audio_urls if audio_urls else urls
+
 # --------------------------------------------------
-# موتور اختصاصی استخراج فایل کیفیت CD اصلی (Lossless FLAC)
+# موتور استخراج FLAC CD Quality
 # --------------------------------------------------
 def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
     query = f"{artist_name} {track_name}"
     logger.info(f"جستجوی نسخه CD Quality (FLAC 1411kbps) برای: '{query}'")
-    send_message(chat_id, f"💿 **در حال جستجوی نسخه CD Quality (FLAC 1411kbps)...**\n🎵 `{query}`")
+    send_message(chat_id, f"💿 **در حال دریافت مستقیم نسخه CD Quality (FLAC 1411kbps)...**\n🎵 `{query}`")
 
-    # ۱. استخراج مستقیم شناسه موزیک در دیتابیس Hi-Res Deezer
+    # ۱. استخراج شناسه تراک در Deezer
     deezer_id = None
     try:
         search_url = f"https://api.deezer.com/search?q={urllib.parse.quote(query)}"
@@ -125,59 +129,70 @@ def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, c
             data = res.json()
             if data.get("data") and len(data["data"]) > 0:
                 deezer_id = data["data"][0].get("id")
-                logger.info(f"شناسه تراک در دیتابیس Hi-Res پیدا شد: {deezer_id}")
+                logger.info(f"شناسه تراک پیدا شد: {deezer_id}")
     except Exception as e:
-        logger.error(f"خطا در جستجوی دیتابیس Hi-Res: {e}")
+        logger.error(f"خطا در پیدا کردن آی‌دی: {e}")
 
-    # ۲. سرورهای استخراج FLAC
+    # ۲. آدرس گیت‌وی‌های مستقیم FLAC
     flac_gateways = [
         f"https://api.deezloader.site/download/track/{deezer_id}?quality=flac" if deezer_id else None,
         f"https://spotisongdownloader.com/api/download-track?q={urllib.parse.quote(query)}",
-        f"https://api.spotidownloader.com/download?url={urllib.parse.quote(spotify_url)}"
+        f"https://api.dzzloader.site/track/{deezer_id}/flac" if deezer_id else None
     ]
 
-    session = requests.Session()
-    session.verify = False
-
+    scraper = cloudscraper.create_scraper()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "*/*"
     }
 
     for index, gateway in enumerate(flac_gateways, 1):
         if not gateway: continue
         logger.info(f"تلاش در سرور Hi-Res شماره {index}: {gateway}")
-        send_message(chat_id, f"📡 **اتصال به سرور Lossless شماره {index}...**")
+        send_message(chat_id, f"📡 **اتصال به گیت‌وی شماره {index}...**")
 
         try:
-            res = session.get(gateway, headers=headers, timeout=35)
+            res = scraper.get(gateway, headers=headers, timeout=35, verify=False)
             logger.info(f"کد وضعیت سرور {index}: {res.status_code}")
 
             if res.status_code == 200:
                 content = res.content
                 size_mb = round(len(content) / (1024 * 1024), 2)
+                dl_link = None
 
-                # اگر پاسخ JSON حاوی لینک مستقیم بود
-                if "application/json" in res.headers.get("Content-Type", "") or len(content) < 500000:
-                    try:
-                        jdata = res.json()
-                        dl_link = jdata.get("link") or jdata.get("download_url") or jdata.get("url")
-                        if dl_link:
-                            logger.info(f"لینک مستقیم FLAC استخراج شد: {dl_link}")
-                            send_message(chat_id, "📥 **لینک استریم خام کیفیت CD استخراج شد! در حال دانلود...**")
-                            res = session.get(dl_link, headers=headers, timeout=120)
-                            content = res.content
-                            size_mb = round(len(content) / (1024 * 1024), 2)
-                    except Exception as e_json:
-                        logger.error(f"خطا در پارس JSON: {e_json}")
-
-                # فایل FLAC اورجینال کیفیت CD معمولاً بالای ۳ مگابایت است
-                if len(content) > 3000000:
+                # اگر پاسخ مستقیم فایل FLAC بود (حجم بالای ۳ مگابایت)
+                if len(content) > 3000000 and "text/html" not in res.headers.get("Content-Type", ""):
                     filename = f"{artist_name} - {track_name} [CD-FLAC].flac"
-                    logger.info(f"دانلود موفق فایل CD Quality! حجم: {size_mb} مگابایت")
+                    logger.info(f"فایل FLAC مستقیم دریافت شد! حجم: {size_mb} MB")
                     return content, filename, size_mb
-                else:
-                    logger.warning(f"حجم فایل کم است ({size_mb}MB)، رد شد.")
+
+                # اگر پاسخ JSON یا HTML حاوی لینک بود
+                try:
+                    data = res.json()
+                    dl_link = data.get("link") or data.get("download_url") or data.get("url")
+                except Exception:
+                    # پارس هوشمند HTML با Regex برای بیرون کشیدن لینک دانلود مستقیم
+                    extracted_urls = extract_urls_from_text(res.text)
+                    if extracted_urls:
+                        for candidate in extracted_urls:
+                            if candidate != gateway:
+                                dl_link = candidate
+                                break
+
+                if dl_link:
+                    logger.info(f"لینک مستقیم استخراج شد: {dl_link}")
+                    send_message(chat_id, "📥 **لینک دانلود فایل FLAC تایید شد! در حال دریافت فایل خام...**")
+                    
+                    file_res = scraper.get(dl_link, headers=headers, timeout=120, verify=False)
+                    content = file_res.content
+                    size_mb = round(len(content) / (1024 * 1024), 2)
+
+                    if len(content) > 3000000: # فایل FLAC معتبر بالای ۳ مگابایت است
+                        filename = f"{artist_name} - {track_name} [CD-FLAC].flac"
+                        logger.info(f"دانلود موفق فایل CD Quality! حجم: {size_mb} MB")
+                        return content, filename, size_mb
+                    else:
+                        logger.warning(f"حجم فایل استخراج شده کم است ({size_mb} MB).")
         except Exception as e:
             logger.error(f"خطا در سرور شماره {index}: {e}")
 
@@ -188,7 +203,7 @@ def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, c
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 ربات کیفیت CD اورجینال فعال است...")
+    logger.info("🚀 ربات استخراج کیفیت CD اورجینال فعال شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -216,15 +231,15 @@ def start_bot_polling():
                             flac_bytes, filename, size_mb = download_pure_cd_flac(text, track_name, artist_name, chat_id)
 
                             if flac_bytes and size_mb > 0:
-                                send_message(chat_id, f"🔥 **فایل اورجینال CD Quality (FLAC) دریافت شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال سندی فایل...")
+                                send_message(chat_id, f"🔥 **فایل اورجینال CD Quality (FLAC) با موفقیت دریافت شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به صورت سند (Document)...")
                                 send_document(
                                     chat_id,
                                     flac_bytes,
                                     filename,
-                                    f"🎼 **{artist_name} - {track_name}**\n💿 **کیفیت:** Original CD FLAC 16-Bit/44.1kHz\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n💿 **کیفیت:** Original CD FLAC (1411kbps / 16-Bit)\n📦 **حجم:** `{size_mb} MB`"
                                 )
                             else:
-                                send_message(chat_id, "❌ متأسفانه سورس نسخه FLAC اورجینال این تراک پیدا نشد.")
+                                send_message(chat_id, "❌ متأسفانه سورس نسخه FLAC اورجینال برای این تراک یافت نشد.")
         except Exception as e:
             logger.error(f"خطای پویایی ربات: {e}")
             time.sleep(2)
