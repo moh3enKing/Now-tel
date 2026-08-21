@@ -7,7 +7,6 @@ import urllib.parse
 import urllib3
 import threading
 import requests
-import cloudscraper
 from flask import Flask
 
 # غیرفعال کردن هشدارهای SSL
@@ -88,8 +87,7 @@ def get_spotify_track_info(spotify_url: str):
         logger.error(f"خطا در OEmbed: {e}")
 
     try:
-        scraper = cloudscraper.create_scraper()
-        res = scraper.get(clean_url, headers=headers, timeout=12)
+        res = requests.get(clean_url, headers=headers, timeout=12)
         html = res.text
 
         m = re.search(r'<title>(.*?) - song and lyrics by (.*?) \| Spotify</title>', html, re.I)
@@ -113,41 +111,56 @@ def get_spotify_track_info(spotify_url: str):
     return "Ye Rooz", "Hayedeh"
 
 # --------------------------------------------------
-# دانلود مستقیم (بدون خطای SSL) و ذخیره روی دیسک
+# دانلود مستقیم و ذخیره روی دیسک (با رفع باگ دانلود جاوا اسکریپت)
 # --------------------------------------------------
 def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
     clean_url = spotify_url.split('?')[0]
+    track_id_match = re.search(r'track/([a-zA-Z0-9]+)', clean_url)
+    track_id = track_id_match.group(1) if track_id_match else ""
+    
     query = f"{artist_name} - {track_name}"
     logger.info(f"در حال پردازش: {query}")
-    send_message(chat_id, f"🔍 **در حال استخراج موزیک:**\n🎵 `{query}`")
+    send_message(chat_id, f"🔍 **در حال استخراج مستقیم موزیک کیفیت بالا:**\n🎵 `{query}`")
 
     os.makedirs("downloads", exist_ok=True)
-
-    # استفاده از requests.Session استاندارد (بدون باگ cloudscraper در SSL)
     session = requests.Session()
     session.verify = False
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://spotisongdownloader.com/"
-    }
-
     apis = [
         {
-            "name": "SpotiSong",
-            "url": f"https://spotisongdownloader.com/api/download-track?q={urllib.parse.quote(query)}"
+            "name": "SpotifyDown",
+            "url": f"https://api.spotifydown.com/download/{track_id}",
+            "headers": {
+                "Origin": "https://spotifydown.com",
+                "Referer": "https://spotifydown.com/",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            }
         },
         {
-            "name": "SpotifyDown",
-            "url": f"https://api.spotidownloader.com/download?url={urllib.parse.quote(clean_url)}"
+            "name": "SpotiDownloader",
+            "url": f"https://api.spotidownloader.com/download?url={urllib.parse.quote(clean_url)}",
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Referer": "https://spotidownloader.com/"
+            }
+        },
+        {
+            "name": "SpotiSong",
+            "url": f"https://spotisongdownloader.com/api/download-track?q={urllib.parse.quote(query)}",
+            "headers": {
+                "User-Agent": "Mozilla/5.0",
+                "Referer": "https://spotisongdownloader.com/"
+            }
         }
     ]
 
     for api in apis:
+        if not track_id and api['name'] == "SpotifyDown":
+            continue
+            
         logger.info(f"تست منبع: {api['name']}")
         try:
-            # دریافت اطلاعات بدون ارور SSL
-            res = session.get(api["url"], headers=headers, timeout=25)
+            res = session.get(api["url"], headers=api["headers"], timeout=25)
             logger.info(f"پاسخ سرور {api['name']}: {res.status_code}")
 
             dl_url = None
@@ -156,21 +169,21 @@ def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, 
                     data = res.json()
                     dl_url = data.get("link") or data.get("download_url") or data.get("url") or data.get("audio")
                 except Exception:
+                    # رفع باگ: فقط لینک‌هایی که واقعاً پسوند موزیک دارند، نه فایل‌های قالب سایت!
                     urls = re.findall(r'https?://[^\s"\'<>]+', res.text)
                     for u in urls:
-                        if any(ext in u.lower() for ext in ['.mp3', '.m4a', '.flac', 'cdn']):
+                        if any(ext in u.lower() for ext in ['.mp3', '.m4a', '.flac', '.wav']) and not u.endswith('.js') and not u.endswith('.css'):
                             dl_url = u
                             break
 
             if dl_url:
-                logger.info(f"لینک مستقیم استخراج شد: {dl_url}")
-                send_message(chat_id, "📥 **لینک دانلود تایید شد! در حال ذخیره فایل کیفیت بالا...**")
+                logger.info(f"لینک صوتی مستقیم پیدا شد: {dl_url}")
+                send_message(chat_id, "📥 **لینک صوتی باکیفیت تایید شد! در حال دانلود و آماده‌سازی فایل...**")
 
                 ext = "flac" if "flac" in dl_url.lower() else "mp3"
                 file_path = f"downloads/{artist_name} - {track_name}.{ext}"
 
-                # دانلود و رایت روی دیسک
-                file_res = session.get(dl_url, headers=headers, stream=True, timeout=120)
+                file_res = session.get(dl_url, headers=api["headers"], stream=True, timeout=120)
                 if file_res.status_code == 200:
                     with open(file_path, 'wb') as f:
                         for chunk in file_res.iter_content(chunk_size=8192):
@@ -181,11 +194,13 @@ def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, 
                     size_mb = round(size_bytes / (1024 * 1024), 2)
                     logger.info(f"فایل روی دیسک ذخیره شد: {file_path} ({size_mb} MB)")
 
-                    if size_bytes > 1000000: # بالای ۱ مگابایت
+                    if size_bytes > 1200000: # حداقل ۱.۲ مگابایت باشه که مطمئن باشیم موزیکه
                         return file_path, size_mb
                     else:
                         os.remove(file_path)
-                        logger.warning("فایل دانلود شده حجم غیرمنطقی داشت و حذف شد.")
+                        logger.warning("حجم فایل زیر 1 مگابایت بود (فایل نامعتبر)، حذف شد.")
+                else:
+                    logger.warning(f"لینک دانلود خراب بود. کد وضعیت: {file_res.status_code}")
         except Exception as e:
             logger.error(f"خطا در منبع {api['name']}: {e}")
 
@@ -196,7 +211,7 @@ def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, 
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 ربات اختصاصی بدون باگ SSL آنلاین شد...")
+    logger.info("🚀 ربات اختصاصی بدون باگ آنلاین شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -227,14 +242,13 @@ def start_bot_polling():
                                     file_path,
                                     f"🎼 **{artist_name} - {track_name}**\n📦 **حجم:** `{size_mb} MB`"
                                 )
-                                # پاک‌سازی فایل پس از ارسال
                                 if os.path.exists(file_path):
                                     os.remove(file_path)
                                 
                                 if not success:
-                                    send_message(chat_id, "❌ متأسفانه تلگرام اجازه آپلود فایل را نداد (محدودیت حجم یا قطعی).")
+                                    send_message(chat_id, "❌ متأسفانه تلگرام اجازه آپلود فایل را نداد.")
                             else:
-                                send_message(chat_id, "❌ دریافت فایل از سرور منبع با خطا مواجه شد.")
+                                send_message(chat_id, "❌ دریافت مستقیم این ترک با تمام سرورها با خطا مواجه شد.")
         except Exception as e:
             logger.error(f"خطای سیستم Polling: {e}")
             time.sleep(2)
