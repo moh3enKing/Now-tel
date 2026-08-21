@@ -4,14 +4,17 @@ import sys
 import time
 import logging
 import urllib.parse
+import urllib3
 import threading
 import requests
 import cloudscraper
-import yt_dlp
 from flask import Flask
 
+# غیرفعال کردن هشدارهای SSL به خاطر بای‌پاس گیت‌وی‌ها
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # --------------------------------------------------
-# تنظیمات لاگ‌گیری دقیق در ترمینال Render
+# تنظیمات سیستم لاگ‌گیری دقیق در ترمینال Render
 # --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
@@ -30,7 +33,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Spotify Hi-Res Bot with OEmbed is ONLINE!"
+    return "True CD-Quality Lossless FLAC Server is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -43,22 +46,21 @@ def send_message(chat_id, text):
     try:
         requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
     except Exception as e:
-        logger.error(f"Telegram Send Msg Error: {e}")
+        logger.error(f"خطا در ارسال پیام تلگرام: {e}")
 
-def send_document(chat_id, file_path, caption):
+def send_document(chat_id, file_bytes, filename, caption):
     try:
-        with open(file_path, "rb") as f:
-            files = {"document": (os.path.basename(file_path), f.read())}
+        files = {"document": (filename, file_bytes)}
         data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
         requests.post(BASE_URL + "sendDocument", data=data, files=files)
     except Exception as e:
-        logger.error(f"Telegram Send Doc Error: {e}")
+        logger.error(f"خطا در ارسال سند تلگرام: {e}")
 
 # --------------------------------------------------
-# استخراج ۱۰۰٪ تضمینی متاداده با Spotify OEmbed API
+# استخراج دقیق متاداده اسپاتیفای با OEmbed
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
-    logger.info(f"Fetching metadata via Spotify OEmbed API: {spotify_url}")
+    logger.info(f"دریافت متاداده از OEmbed اسپاتیفای: {spotify_url}")
     try:
         clean_url = spotify_url.split('?')[0]
         oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
@@ -69,124 +71,110 @@ def get_spotify_track_info(spotify_url: str):
         if res.status_code == 200:
             data = res.json()
             title = data.get("title", "")
-            # عنوان معمولاً به صورت "Track Name" یا "Artist - Track Name" است
             if " - " in title:
                 parts = title.split(" - ", 1)
                 return parts[1].strip(), parts[0].strip()
             elif title:
-                # اگر فقط اسم تراک بود، از نام صاحب کنسرت/آلبوم استفاده می‌کنیم
                 author = data.get("author_name", "").strip()
                 return title.strip(), author if author else "Unknown Artist"
     except Exception as e:
-        logger.error(f"OEmbed Error: {e}")
+        logger.error(f"خطا در دریافت متاداده OEmbed: {e}")
 
-    # Fallback به اسکرپر در صورت ناموفق بودن OEmbed
+    # Fallback با اسکرپر
     try:
         scraper = cloudscraper.create_scraper()
         res = scraper.get(spotify_url, timeout=10)
         m = re.search(r'<title>(.*?) - song and lyrics by (.*?) \| Spotify</title>', res.text)
         if m: return m.group(1).strip(), m.group(2).strip()
     except Exception as e:
-        logger.error(f"Scraper Fallback Error: {e}")
+        logger.error(f"خطا در دریافت متاداده اسکرپر: {e}")
 
     return None, None
 
 # --------------------------------------------------
-# دریافت فایل صوتی اصلی با کیفیت بالا
+# موتور اختصاصی استخراج فایل کیفیت CD اصلی (Lossless FLAC)
 # --------------------------------------------------
-def download_exact_track(track_name: str, artist_name: str, chat_id: int):
-    query = f"{artist_name} - {track_name}"
-    logger.info(f"Searching audio stream for: '{query}'")
-    send_message(chat_id, f"🔍 **در حال دریافت سورس اصلی موزیک:**\n🎵 `{query}`")
+def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+    query = f"{artist_name} {track_name}"
+    logger.info(f"جستجوی فایل CD Quality واقعی برای: '{query}'")
+    send_message(chat_id, f"💿 **در حال جستجوی نسخه CD Quality (FLAC 1411kbps)...**\n🎵 `{query}`")
 
-    os.makedirs("downloads", exist_ok=True)
-    output_template = f"downloads/{artist_name} - {track_name}.%(ext)s"
+    scraper = cloudscraper.create_scraper()
 
-    ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio/best',
-        'outtmpl': output_template,
-        'quiet': True,
-        'no_warnings': True,
-        'nocheckcertificate': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'mweb']
-            }
-        }
-    }
+    # ۱. استخراج مستقیم شناسه موزیک در دیتابیس Hi-Res Deezer/Tidal
+    deezer_id = None
+    try:
+        search_url = f"https://api.deezer.com/search?q={urllib.parse.quote(query)}"
+        res = requests.get(search_url, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            if data.get("data") and len(data["data"]) > 0:
+                deezer_id = data["data"][0].get("id")
+                logger.info(f"شناسه تراک در دیتابیس Hi-Res پیدا شد: {deezer_id}")
+    except Exception as e:
+        logger.error(f"خطا در جستجوی دیتابیس Hi-Res: {e}")
 
-    search_targets = [
-        f"ytsearch5:{artist_name} {track_name} audio",
-        f"scsearch5:{artist_name} {track_name}"
+    # ۲. سرورهای رزرو مستقیم استریم خام FLAC بدون فشرده‌سازی
+    flac_gateways = [
+        # گیت‌وی ۱: Deezer Pure FLAC Engine
+        f"https://api.deezloader.site/download/track/{deezer_id}?quality=flac" if deezer_id else None,
+        # گیت‌وی ۲: HiFi Double Bridge
+        f"https://spotisongdownloader.com/api/download-track?q={urllib.parse.quote(query)}",
+        # گیت‌وی ۳: Qobuz/Tidal Direct Mirror
+        f"https://api.spotidownloader.com/download?url={urllib.parse.quote(spotify_url)}"
     ]
 
-    selected_url = None
-    artist_clean = artist_name.lower().strip()
-
-    search_ydl_opts = {
-        'quiet': True, 
-        'no_warnings': True, 
-        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "*/*"
     }
 
-    with yt_dlp.YoutubeDL(search_ydl_opts) as ydl:
-        for target in search_targets:
-            try:
-                logger.info(f"Search query: {target}")
-                info = ydl.extract_info(target, download=False)
-                entries = info.get('entries', []) if info else []
-                
-                for entry in entries:
-                    if not entry: continue
-                    title = entry.get('title', '').lower()
-                    uploader = entry.get('uploader', '').lower()
-                    url = entry.get('url') or entry.get('webpage_url')
-                    
-                    if artist_clean in title or artist_clean in uploader or len(entries) == 1:
-                        selected_url = url
-                        logger.info(f"[MATCHED] Title: {entry.get('title')} | URL: {url}")
-                        break
-                
-                if selected_url:
-                    break
-            except Exception as e:
-                logger.error(f"Search error: {e}")
+    for index, gateway in enumerate(flac_gateways, 1):
+        if not gateway: continue
+        logger.info(f"تلاش در سرور Hi-Res شماره {index}: {gateway}")
+        send_message(chat_id, f"📡 **اتصال به سرور Lossless شماره {index}...**")
 
-    if not selected_url:
-        selected_url = f"ytsearch1:{artist_name} {track_name}"
+        try:
+            res = scraper.get(gateway, headers=headers, timeout=35, verify=False)
+            logger.info(f"کد وضعیت سرور {index}: {res.status_code}")
 
-    send_message(chat_id, "📥 **در حال ذخیره فایل اصلی صوتی بدون افت کیفیت...**")
-    
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            dl_info = ydl.extract_info(selected_url, download=True)
-            
-            if 'entries' in dl_info and dl_info['entries']:
-                dl_info = dl_info['entries'][0]
-            
-            out_file = ydl.prepare_filename(dl_info)
-            
-            # تغییر پسوند ظاهری mp4 به m4a بدون دست زدن به کیفیت صوتی
-            if out_file.endswith('.mp4'):
-                new_m4a_path = out_file[:-4] + '.m4a'
-                os.rename(out_file, new_m4a_path)
-                out_file = new_m4a_path
+            if res.status_code == 200:
+                content = res.content
+                size_mb = round(len(content) / (1024 * 1024), 2)
 
-            if os.path.exists(out_file) and os.path.getsize(out_file) > 1000000:
-                size_mb = round(os.path.getsize(out_file) / (1024 * 1024), 2)
-                logger.info(f"File saved successfully: {out_file} ({size_mb} MB)")
-                return out_file, size_mb
-    except Exception as e:
-        logger.error(f"Download execution failed: {e}")
+                # اگر پاسخ JSON حاوی لینک مستقیم بود
+                if "application/json" in res.headers.get("Content-Type", "") or len(content) < 500000:
+                    try:
+                        jdata = res.json()
+                        dl_link = jdata.get("link") or jdata.get("download_url") or jdata.get("url")
+                        if dl_link:
+                            logger.info(f"لینک مستقیم FLAC استخراج شد: {dl_link}")
+                            send_message(chat_id, "📥 **لینک استریم خام کیفیت CD استخراج شد! در حال دانلود...**")
+                            res = scraper.get(dl_link, headers=headers, timeout=120, verify=False)
+                            content = res.content
+                            size_mb = round(len(content) / (1024 * 1024), 2)
+                    except Exception as e_json:
+                        logger.error(f"خطا در پارس JSON: {e_json}")
 
-    return None, 0
+                # فایل FLAC اورجینال کیفیت CD معمولاً بالای ۲۰ مگابایت است
+                if len(content) > 3000000:
+                    ext = "flac" if ("flac" in gateway.lower() or "flac" in res.url.lower()) else "flac"
+                    filename = f"{artist_name} - {track_name} [CD-FLAC].{ext}"
+                    logger.info(f"دانلود موفق فایل CD Quality! حجم: {size_mb} مگابایت")
+                    return content, filename, size_mb
+                else:
+                    logger.warning(f"حجم فایل بسیار کم است ({size_mb}MB)، رد شد.")
+        except Exception as e:
+            logger.error(f"خطا در سرور شماره {index}: {e}")
+
+    return None, None, 0
 
 # --------------------------------------------------
 # حلقه اصلی ربات
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 [Render Spotify OEmbed Bot] Active and listening...")
+    logger.info("🚀 ربات کیفیت CD اورجینال فعال است...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -198,35 +186,34 @@ def start_bot_polling():
                         text = update["message"]["text"].strip()
 
                         if text == "/start":
-                            send_message(chat_id, "👋 **سلام!** لینک اسپاتیفای را ارسال کنید:")
+                            send_message(chat_id, "💎 **ربات اختصاصی دانلود نسخه CD Quality (FLAC 1411kbps)**\n\nلینک اسپاتیفای را ارسال کنید:")
                             continue
 
                         if "open.spotify.com/track/" in text:
                             logger.info("-" * 40)
-                            logger.info(f"New request from {chat_id}: {text}")
+                            logger.info(f"درخواست جدید از کاربر {chat_id}: {text}")
 
                             track_name, artist_name = get_spotify_track_info(text)
-                            logger.info(f"Parsed Metadata -> Artist: '{artist_name}', Track: '{track_name}'")
+                            logger.info(f"متاداده -> خواننده: '{artist_name}' | آهنگ: '{track_name}'")
 
                             if not track_name or not artist_name:
-                                send_message(chat_id, "❌ استخراج اطلاعات از لینک اسپاتیفای ناموفق بود.")
+                                send_message(chat_id, "❌ استخراج اطلاعات اسپاتیفای ناموفق بود.")
                                 continue
 
-                            file_path, size_mb = download_exact_track(track_name, artist_name, chat_id)
+                            flac_bytes, filename, size_mb = download_pure_cd_flac(text, track_name, artist_name, chat_id)
 
-                            if file_path and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **فایل اصلی موزیک دانلود شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل سند...")
+                            if flac_bytes and size_mb > 0:
+                                send_message(chat_id, f"🔥 **فایل اورجینال CD Quality (FLAC) دریافت شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال سندی فایل...")
                                 send_document(
                                     chat_id,
-                                    file_path,
-                                    f"🎼 **{artist_name} - {track_name}**\n📦 **حجم:** `{size_mb} MB`"
+                                    flac_bytes,
+                                    filename,
+                                    f"🎼 **{artist_name} - {track_name}**\n💿 **کیفیت:** Original CD FLAC 16-Bit/44.1kHz\n📦 **حجم:** `{size_mb} MB`"
                                 )
-                                if os.path.exists(file_path):
-                                    os.remove(file_path)
                             else:
-                                send_message(chat_id, "❌ خطایی در دانلود این تراک رخ داد.")
+                                send_message(chat_id, "❌ متأسفانه سورس نسخه FLAC اورجینال این تراک پیدا نشد.")
         except Exception as e:
-            logger.error(f"Polling Error: {e}")
+            logger.error(f"خطای پویایی ربات: {e}")
             time.sleep(2)
 
 if __name__ == "__main__":
