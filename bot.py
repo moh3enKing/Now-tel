@@ -15,7 +15,7 @@ from flask import Flask
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --------------------------------------------------
-# تنظیمات سیستم لاگ‌گیری در ترمینال Render
+# تنظیمات لاگ‌گیری در ترمینال Render
 # --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
@@ -58,7 +58,7 @@ def send_document(chat_id, file_bytes, filename, caption):
         logger.error(f"خطا در ارسال فایل: {e}")
 
 # --------------------------------------------------
-# استخراج هوشمند متاداده اسپاتیفای
+# استخراج متاداده اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
     logger.info(f"دریافت متاداده برای: {spotify_url}")
@@ -134,10 +134,9 @@ def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, c
     except Exception as e:
         logger.error(f"خطا در پیدا کردن آی‌دی: {e}")
 
-    # ۲. ساخت Cloudscraper
-    scraper = cloudscraper.create_scraper(
-        browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-    )
+    # ۲. ساخت یک Session امن برای بای‌پاس SSL بدون ایجاد تعارض check_hostname
+    session = requests.Session()
+    session.verify = False
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -156,7 +155,7 @@ def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, c
         send_message(chat_id, f"📡 **اتصال به گیت‌وی شماره {index}...**")
 
         try:
-            res = scraper.get(gateway, headers=headers, timeout=35, verify=False)
+            res = session.get(gateway, headers=headers, timeout=35)
             logger.info(f"کد وضعیت سرور {index}: {res.status_code}")
 
             if res.status_code == 200:
@@ -186,7 +185,7 @@ def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, c
                     logger.info(f"لینک مستقیم استخراج شد: {dl_link}")
                     send_message(chat_id, "📥 **لینک دانلود فایل FLAC تایید شد! در حال دریافت فایل خام...**")
                     
-                    file_res = scraper.get(dl_link, headers=headers, timeout=120, verify=False)
+                    file_res = session.get(dl_link, headers=headers, timeout=120)
                     content = file_res.content
                     size_mb = round(len(content) / (1024 * 1024), 2)
 
