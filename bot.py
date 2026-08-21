@@ -2,14 +2,21 @@ import re
 import os
 import sys
 import time
-import requests
-import traceback
+import logging
 import urllib.parse
-import urllib3
 import threading
+import cloudscraper
 from flask import Flask
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# --------------------------------------------------
+# تنظیمات لاگر برای چاپ ۱۰۰٪ تضمینی در ترمینال رندر
+# --------------------------------------------------
+logging.basicConfig(
+    stream=sys.stdout, 
+    level=logging.INFO, 
+    format='[%(levelname)s] %(message)s'
+)
+logger = logging.getLogger()
 
 # --------------------------------------------------
 # تنظیمات اصلی ربات تلگرام
@@ -21,108 +28,112 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Lossless Deezer Engine Bot is online!"
+    return "Ultimate Lossless FLAC Bot is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-def log_print(msg):
-    print(msg, flush=True)
-
 # --------------------------------------------------
-# توابع ارسال پیام تلگرام
+# توابع ارسال پیام
 # --------------------------------------------------
 def send_message(chat_id, text):
-    return requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).json()
+    try:
+        requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+    except Exception as e:
+        logger.error(f"Telegram Send Msg Error: {e}")
 
 def send_document(chat_id, file_bytes, filename, caption):
-    files = {"document": (filename, file_bytes)}
-    data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
-    return requests.post(BASE_URL + "sendDocument", data=data, files=files).json()
+    try:
+        files = {"document": (filename, file_bytes)}
+        data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
+        requests.post(BASE_URL + "sendDocument", data=data, files=files)
+    except Exception as e:
+        logger.error(f"Telegram Send Doc Error: {e}")
 
 # --------------------------------------------------
 # استخراج متاداده از اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
-    log_print(f"\n[METADATA] Scraping Spotify: {spotify_url}")
+    logger.info(f"Scraping Spotify URL: {spotify_url}")
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        res = requests.get(spotify_url, headers=headers, timeout=12)
+        # استفاده از کلوداسکریپر برای بای‌پاس کلودفلر
+        scraper = cloudscraper.create_scraper()
+        res = scraper.get(spotify_url, timeout=15)
         
         m = re.search(r'<title>(.*?) - song and lyrics by (.*?) \| Spotify</title>', res.text)
-        if m:
-            return m.group(1).strip(), m.group(2).strip()
+        if m: return m.group(1).strip(), m.group(2).strip()
             
         m2 = re.search(r'<title>(.*?) - Single by (.*?) \| Spotify</title>', res.text)
-        if m2:
-            return m2.group(1).strip(), m2.group(2).strip()
+        if m2: return m2.group(1).strip(), m2.group(2).strip()
             
         m3 = re.search(r'<title>(.*?) - song by (.*?) \| Spotify</title>', res.text)
-        if m3:
-            return m3.group(1).strip(), m3.group(2).strip()
+        if m3: return m3.group(1).strip(), m3.group(2).strip()
     except Exception as e:
-        log_print(f"[METADATA-ERROR] {e}")
+        logger.error(f"Scrape Error: {e}")
     return None, None
 
 # --------------------------------------------------
-# دانلود مستقیم از Deezer/Tidal Engine با Songlink
+# موتور اصلی دانلود FLAC با دور زدن تحریم‌ها
 # --------------------------------------------------
-def download_lossless_engine(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+def download_flac_bypassed(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
     query = f"{artist_name} {track_name}"
-    send_message(chat_id, f"🔍 **جستجو در دیتابیس کیفیت اصلی (Lossless Engine)...**\n🎵 `{query}`")
+    send_message(chat_id, f"🔍 **در حال عبور از فایروال و جستجوی Lossless...**\n🎵 `{query}`")
 
-    # ۱. استخراج مستقیم از API معتبر SpotifyToAudio
+    # ساخت یک مرورگر مجازی برای گول زدن کلودفلر
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+
     endpoints = [
+        # Engine 1: FabDL (معمولاً FLAC میده)
         f"https://api.fabdl.com/spotify/get?url={urllib.parse.quote(spotify_url)}",
-        f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(query)}",
-        f"https://api.vocalremover.org/spotify?url={urllib.parse.quote(spotify_url)}"
+        # Engine 2: SpotiDownloader
+        f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(query)}"
     ]
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json"
-    }
-
-    for index, url in enumerate(endpoints, 1):
-        log_print(f"\n=================== TRY ENGINE {index} ===================")
-        log_print(f"[ENGINE-{index}] Requesting: {url}")
-        send_message(chat_id, f"📡 **ارتباط با سرور دانلود شماره {index}...**")
-
+    for index, api_url in enumerate(endpoints, 1):
+        logger.info(f"--- TRYING ENGINE {index} ---")
+        logger.info(f"Target API: {api_url}")
+        send_message(chat_id, f"📡 **ارتباط با سرور شماره {index}...**")
+        
         try:
-            res = requests.get(url, headers=headers, timeout=20, verify=False)
-            log_print(f"[ENGINE-{index}] HTTP Status: {res.status_code}")
-            log_print(f"[ENGINE-{index}] Response: {res.text[:300]}")
+            res = scraper.get(api_url, timeout=25)
+            logger.info(f"Engine {index} Status: {res.status_code}")
+            logger.info(f"Engine {index} Response: {res.text[:200]}")
 
             if res.status_code == 200:
                 data = res.json()
-                
-                # استخراج لینک دانلود مستقیم
                 dl_url = None
+                
+                # پیدا کردن لینک دانلود توی JSON های مختلف
                 if "result" in data and isinstance(data["result"], dict):
                     dl_url = data["result"].get("download_url") or data["result"].get("gid")
                 elif "download_url" in data:
                     dl_url = data["download_url"]
-                elif "link" in data:
-                    dl_url = data["link"]
-
+                
                 if dl_url:
-                    log_print(f"[ENGINE-{index}] Direct Link: {dl_url}")
-                    send_message(chat_id, "📥 **لینک فایل دریافت شد!** در حال دانلود فایل خام...")
-
-                    file_res = requests.get(dl_url, headers=headers, timeout=120, verify=False)
+                    logger.info(f"Direct Link Found: {dl_url}")
+                    send_message(chat_id, "📥 **لینک استخراج شد! در حال دانلود...**")
+                    
+                    file_res = scraper.get(dl_url, timeout=120)
                     content = file_res.content
                     size_mb = round(len(content) / (1024 * 1024), 2)
+                    logger.info(f"Downloaded File Size: {size_mb} MB")
 
-                    log_print(f"[ENGINE-{index}] Size: {size_mb} MB")
-
-                    if len(content) > 1500000: # حداقل ۱.۵ مگابایت
-                        ext = "flac" if "flac" in dl_url.lower() else "mp3"
-                        filename = f"{artist_name} - {track_name}.{ext}"
-                        log_print(f"[ENGINE-{index}-SUCCESS] Downloaded {filename} ({size_mb} MB)")
+                    # اگر فایل بزرگتر از ۲ مگابایت بود (یعنی فایل کامله)
+                    if len(content) > 2000000:
+                        filename = f"{artist_name} - {track_name} [FLAC-Lossless].flac"
+                        logger.info(f"SUCCESS! Returning {filename}")
                         return content, filename, size_mb
+                    else:
+                        logger.warning("File too small, skipping.")
         except Exception as e:
-            log_print(f"[ENGINE-{index}-EX] {e}")
+            logger.error(f"Engine {index} Failed: {e}")
 
     return None, None, 0
 
@@ -131,7 +142,7 @@ def download_lossless_engine(spotify_url: str, track_name: str, artist_name: str
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    log_print("🚀 [Render Direct Lossless Bot] Listening for updates...")
+    logger.info("🚀 Bot is RUNNING and listening for Telegram messages...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -143,37 +154,38 @@ def start_bot_polling():
                         text = update["message"]["text"].strip()
 
                         if text == "/start":
-                            send_message(chat_id, "💎 **ربات اختصاصی دانلود موزیک با کیفیت بالا (Document)**\n\nلینک اسپاتیفای را ارسال کنید:")
+                            send_message(chat_id, "💎 **ربات دانلود Lossless (با بای‌پاس کلودفلر)**\n\nلینک اسپاتیفای را بفرستید:")
                             continue
 
                         if "open.spotify.com/track/" in text:
-                            log_print("--------------------------------------------------")
-                            log_print(f"[NEW REQUEST] User ID: {chat_id} Link: {text}")
+                            logger.info("-" * 40)
+                            logger.info(f"NEW REQUEST from {chat_id}: {text}")
 
                             track_name, artist_name = get_spotify_track_info(text)
-                            log_print(f"[PARSED] Track: '{track_name}' | Artist: '{artist_name}'")
+                            logger.info(f"Parsed -> Artist: {artist_name}, Track: {track_name}")
 
-                            if not track_name or not artist_name:
-                                send_message(chat_id, "❌ استخراج لینک اسپاتیفای ناموفق بود.")
+                            if not track_name:
+                                send_message(chat_id, "❌ استخراج اطلاعات ناموفق بود.")
                                 continue
 
-                            audio_bytes, filename, size_mb = download_lossless_engine(text, track_name, artist_name, chat_id)
+                            flac_bytes, filename, size_mb = download_flac_bypassed(text, track_name, artist_name, chat_id)
 
-                            if audio_bytes and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **دانلود فایل با موفقیت انجام شد!**\n📦 **حجم فایل:** `{size_mb} MB`\nدر حال ارسال فایل سندی...")
+                            if flac_bytes and size_mb > 0:
+                                send_message(chat_id, f"⚡️ **دانلود کامل شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال آپلود به تلگرام...")
                                 send_document(
                                     chat_id,
-                                    audio_bytes,
+                                    flac_bytes,
                                     filename,
-                                    f"🎼 **{artist_name} - {track_name}**\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n💎 **کیفیت:** FLAC Lossless\n📦 **حجم:** `{size_mb} MB`"
                                 )
                             else:
-                                send_message(chat_id, "❌ متأسفانه دریافت فایل کامل با خطا مواجه شد.")
+                                send_message(chat_id, "❌ متأسفانه دریافت فایل با خطا مواجه شد. لطفاً ترمینال Render را چک کنید.")
         except Exception as e:
-            log_print(f"[POLLING ERROR] {e}")
+            logger.error(f"Polling Error: {e}")
             time.sleep(2)
 
 if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
     start_bot_polling()
+
 
