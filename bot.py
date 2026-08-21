@@ -8,8 +8,9 @@ from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import yt_dlp
+from difflib import SequenceMatcher
 
-BOT_TOKEN = "8135900333:AAEaqN-IyOANOGpqwIGqernMM_0piAjefXA"  # ⚠️ حتماً عوضش کن
+BOT_TOKEN = "8135900333:AAEaqN-IyOANOGpqwIGqernMM_0piAjefXA"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,26 +35,46 @@ def get_track_info(track_id: str):
         return title, artist
     raise Exception("اطلاعات پیدا نشد")
 
-def search_soundcloud(query: str, tmpdir: str):
+def similarity(a, b):
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+def filter_best_result(entries, title, artist, max_results=5):
+    """انتخاب بهترین نتیجه بر اساس تطابق عنوان و هنرمند"""
+    best_score = 0
+    best_entry = None
+    for entry in entries[:max_results]:
+        entry_title = entry.get('title', '')
+        entry_artist = entry.get('artist', '') or entry.get('uploader', '')
+        score = similarity(entry_title, title) * 0.7 + similarity(entry_artist, artist) * 0.3
+        if score > best_score:
+            best_score = score
+            best_entry = entry
+    if best_score > 0.5:  # آستانه قبول
+        return best_entry
+    return entries[0]  # اگر هیچ‌کدام خوب نبود، اولی
+
+def search_soundcloud(query: str, tmpdir: str, title: str, artist: str):
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': os.path.join(tmpdir, '%(title)s.%(ext)s'),
         'quiet': True,
         'no_warnings': True,
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'flac', 'preferredquality': '0'}],
-        'extractor_args': {'soundcloud': {'client_id': 'Web'}}
+        'extractor_args': {'soundcloud': {'client_id': 'Web'}},
+        'match_filter': lambda info: info.get('duration', 0) > 60 and info.get('duration', 0) < 600
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            search = ydl.extract_info(f"scsearch1:{query}", download=False)
+            search = ydl.extract_info(f"scsearch5:{query}", download=False)
             if 'entries' in search and search['entries']:
-                ydl.download([search['entries'][0]['webpage_url']])
+                best_entry = filter_best_result(search['entries'], title, artist)
+                ydl.download([best_entry['webpage_url']])
                 return True
     except Exception as e:
         logger.warning(f"SoundCloud error: {e}")
     return False
 
-def search_youtube(query: str, tmpdir: str):
+def search_youtube(query: str, tmpdir: str, title: str, artist: str):
     ydl_opts = {
         'format': 'bestaudio/best',
         'outtmpl': os.path.join(tmpdir, '%(title)s.%(ext)s'),
@@ -61,13 +82,14 @@ def search_youtube(query: str, tmpdir: str):
         'no_warnings': True,
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'flac', 'preferredquality': '0'}],
         'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        'match_filter': lambda info: info.get('duration', 0) > 120 and info.get('duration', 0) < 600  # فیلتر مدت زمان ۲ تا ۱۰ دقیقه
+        'match_filter': lambda info: info.get('duration', 0) > 120 and info.get('duration', 0) < 600
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            search = ydl.extract_info(f"ytsearch1:{query} audio", download=False)
+            search = ydl.extract_info(f"ytsearch5:{query}", download=False)
             if 'entries' in search and search['entries']:
-                ydl.download([search['entries'][0]['webpage_url']])
+                best_entry = filter_best_result(search['entries'], title, artist)
+                ydl.download([best_entry['webpage_url']])
                 return True
     except Exception as e:
         logger.warning(f"YouTube error: {e}")
@@ -90,10 +112,10 @@ async def handle_spotify_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"🎵 {title} - {artist}\nدر حال جستجو در ساندکلود...")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            success = search_soundcloud(query, tmpdir)
+            success = search_soundcloud(query, tmpdir, title, artist)
             if not success:
                 await update.message.reply_text("ساندکلود جواب نداد، تلاش از یوتیوب...")
-                success = search_youtube(query, tmpdir)
+                success = search_youtube(query, tmpdir, title, artist)
 
             if not success:
                 await update.message.reply_text("هیچ منبعی پیدا نشد.")
