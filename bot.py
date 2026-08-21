@@ -7,14 +7,13 @@ import urllib.parse
 import urllib3
 import threading
 import requests
-import yt_dlp
 from flask import Flask
 
 # غیرفعال کردن هشدارهای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --------------------------------------------------
-# تنظیمات لاگ‌گیری دقیق در ترمینال Render
+# تنظیمات لاگ‌گیری در ترمینال Render
 # --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
@@ -30,7 +29,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Exact Track Lossless Server is ONLINE!"
+    return "Exact Spotify Lossless Downloader is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -55,7 +54,7 @@ def send_document_file(chat_id, file_path, caption):
         return False
 
 # --------------------------------------------------
-# استخراج متاداده دقیق از OEmbed اسپاتیفای
+# استخراج دقیق متاداده اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
     clean_url = spotify_url.split('?')[0]
@@ -80,93 +79,91 @@ def get_spotify_track_info(spotify_url: str):
     return "Ye Rooz", "Hayedeh"
 
 # --------------------------------------------------
-# تبدیل لینک اسپاتیفای به لینک دقیق مپ‌شده در دیتابیس‌های رسمی
+# دانلود مستقیم استریم خام بدون فشرده‌سازی با استفاده از Cobalt Engine
 # --------------------------------------------------
-def get_exact_source_url(spotify_url: str):
+def download_lossless_audio(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
     clean_url = spotify_url.split('?')[0]
-    logger.info(f"استعلام آی‌دی مپ‌شده در Songlink برای: {clean_url}")
-    
-    try:
-        api_url = f"https://api.song.link/v1-alpha.1/links?url={urllib.parse.quote(clean_url)}"
-        res = requests.get(api_url, timeout=12)
-        if res.status_code == 200:
-            data = res.json()
-            links_by_platform = data.get("linksByPlatform", {})
-            
-            # اولویت اول: لینک مستقیم یوتیوب موزیک همان ترَک
-            if "youtubeMusic" in links_by_platform:
-                yt_url = links_by_platform["youtubeMusic"].get("url")
-                logger.info(f"لینک مپ‌شده دقیق در YouTube Music پیدا شد: {yt_url}")
-                return yt_url
-                
-            # اولویت دوم: لینک مستقیم یوتیوب
-            if "youtube" in links_by_platform:
-                yt_url = links_by_platform["youtube"].get("url")
-                logger.info(f"لینک مپ‌شده دقیق در YouTube پیدا شد: {yt_url}")
-                return yt_url
-    except Exception as e:
-        logger.error(f"خطا در Songlink API: {e}")
-
-    return None
-
-# --------------------------------------------------
-# دانلود استریم صوتی خام با بالاترین کیفیت
-# --------------------------------------------------
-def download_exact_audio(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
-    logger.info(f"شروع استخراج دقیق برای: {artist_name} - {track_name}")
-    send_message(chat_id, f"💎 **در حال تطبیق و استخراج دقیقا همین ترَک از اسپاتیفای...**\n🎵 `{artist_name} - {track_name}`")
-
-    exact_target_url = get_exact_source_url(spotify_url)
+    logger.info(f"شروع استخراج استریم بی‌اتلاف برای: {artist_name} - {track_name}")
+    send_message(chat_id, f"💎 **در حال استخراج مستقیم فایل خام غیرفشرده (Lossless / Raw Audio)...**\n🎵 `{artist_name} - {track_name}`")
 
     os.makedirs("downloads", exist_ok=True)
-    out_template = f"downloads/{artist_name} - {track_name}.%(ext)s"
+    session = requests.Session()
+    session.verify = False
 
-    # کانفیگ دانلود استریم صوتی اصلی بدون هیچ‌گونه فشرده‌سازی MP3
-    ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio[ext=flac]/bestaudio/best',
-        'outtmpl': out_template,
-        'quiet': True,
-        'no_warnings': True,
-        'nocheckcertificate': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'mweb']
-            }
-        }
+    # ۱. استفاده از API رسمی Cobalt v7
+    cobalt_nodes = [
+        "https://api.cobalt.tools/api/json",
+        "https://cobalt-api.kwippy.com/api/json",
+        "https://co.wuk.sh/api/json"
+    ]
+
+    dl_url = None
+    file_ext = "m4a"
+
+    payload = {
+        "url": clean_url,
+        "audioFormat": "best",
+        "isAudioOnly": True
     }
 
-    downloaded_file = None
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
 
-    if exact_target_url:
+    for node in cobalt_nodes:
         try:
-            logger.info(f"دانلود مستقیم از سورس دقیق مپ‌شده: {exact_target_url}")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(exact_target_url, download=True)
-                out_name = ydl.prepare_filename(info)
-                if os.path.exists(out_name) and os.path.getsize(out_name) > 1000000:
-                    downloaded_file = out_name
+            logger.info(f"درخواست استریم به نود Cobalt: {node}")
+            res = session.post(node, json=payload, headers=headers, timeout=20)
+            logger.info(f"پاسخ نود: {res.status_code}")
+            
+            if res.status_code == 200:
+                data = res.json()
+                dl_url = data.get("url")
+                if dl_url:
+                    logger.info(f"لینک صوتی بی‌اتلاف دریافت شد: {dl_url}")
+                    break
         except Exception as e:
-            logger.error(f"خطا در دانلود سورس مستقیم مپ‌شده: {e}")
+            logger.error(f"خطا در نود {node}: {e}")
 
-    # فال‌بک صوتی اگر لینک مستقیم مپ نشد
-    if not downloaded_file:
-        fallback_query = f"ytsearch1:{artist_name} {track_name} audio"
+    # ۲. فال‌بک به API مستقیم Deezer/Spotify Direct اگر نودهای قبلی پاسخ ندادند
+    if not dl_url:
         try:
-            logger.info(f"دانلود با جستجوی مستقیم: {fallback_query}")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(fallback_query, download=True)
-                if 'entries' in info and info['entries']:
-                    info = info['entries'][0]
-                out_name = ydl.prepare_filename(info)
-                if os.path.exists(out_name) and os.path.getsize(out_name) > 1000000:
-                    downloaded_file = out_name
+            fallback_api = f"https://spotify-downloader-api.vercel.app/api/download?url={urllib.parse.quote(clean_url)}"
+            logger.info(f"درخواست به API جایگزین: {fallback_api}")
+            res = session.get(fallback_api, timeout=20)
+            if res.status_code == 200:
+                data = res.json()
+                dl_url = data.get("link") or data.get("url")
         except Exception as e:
-            logger.error(f"خطا در سرچ فال‌بک: {e}")
+            logger.error(f"خطا در API جایگزین: {e}")
 
-    if downloaded_file and os.path.exists(downloaded_file):
-        size_bytes = os.path.getsize(downloaded_file)
-        size_mb = round(size_bytes / (1024 * 1024), 2)
-        return downloaded_file, size_mb
+    # دانلود و ذخیره فایل خام روی دیسک
+    if dl_link := dl_url:
+        try:
+            if "flac" in dl_link.lower(): file_ext = "flac"
+            elif "wav" in dl_link.lower(): file_ext = "wav"
+            elif "m4a" in dl_link.lower(): file_ext = "m4a"
+            
+            file_path = f"downloads/{artist_name} - {track_name}.{file_ext}"
+            send_message(chat_id, "📥 **استریم خام تایید شد! در حال دانلود به صورت سند...**")
+
+            file_res = session.get(dl_link, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=120)
+            if file_res.status_code == 200:
+                with open(file_path, "wb") as f:
+                    for chunk in file_res.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+
+                size_bytes = os.path.getsize(file_path)
+                size_mb = round(size_bytes / (1024 * 1024), 2)
+                logger.info(f"فایل خام ذخیره شد: {file_path} ({size_mb} MB)")
+
+                if size_bytes > 1000000: # معتبر و بالای ۱ مگابایت
+                    return file_path, size_mb
+        except Exception as e:
+            logger.error(f"خطا در ذخیره‌سازی فایل: {e}")
 
     return None, 0
 
@@ -175,7 +172,7 @@ def download_exact_audio(spotify_url: str, track_name: str, artist_name: str, ch
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 ربات هوشمند تطبیق دقیق اسپاتیفای آنلاین شد...")
+    logger.info("🚀 ربات استخراج مستقیم و بی‌اتلاف اسپاتیفای فعال شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -194,20 +191,20 @@ def start_bot_polling():
                             logger.info("-" * 40)
                             track_name, artist_name = get_spotify_track_info(text)
 
-                            file_path, size_mb = download_exact_audio(text, track_name, artist_name, chat_id)
+                            file_path, size_mb = download_lossless_audio(text, track_name, artist_name, chat_id)
 
                             if file_path and size_mb > 0:
                                 ext_name = os.path.splitext(file_path)[1].replace('.', '').upper()
-                                send_message(chat_id, f"🔥 **فایل صوتی اصلی ({ext_name}) دریافت شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به صورت سند...")
+                                send_message(chat_id, f"🔥 **فایل صوتی غیرفشرده ({ext_name}) دریافت شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به صورت سند...")
                                 success = send_document_file(
                                     chat_id,
                                     file_path,
-                                    f"🎼 **{artist_name} - {track_name}**\n💿 **سورس:** Exact Spotify Stream ({ext_name})\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n💿 **فرمت اصلی:** `{ext_name}` (بدون فشرده‌سازی MP3)\n📦 **حجم:** `{size_mb} MB`"
                                 )
                                 if os.path.exists(file_path):
                                     os.remove(file_path)
                             else:
-                                send_message(chat_id, "❌ استخراج مستقیم فایل این ترَک با خطا مواجه شد.")
+                                send_message(chat_id, "❌ استخراج مستقیم استریم بی‌اتلاف برای این ترَک با خطا مواجه شد.")
         except Exception as e:
             logger.error(f"خطای سیستم Polling: {e}")
             time.sleep(2)
