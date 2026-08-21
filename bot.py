@@ -30,14 +30,14 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Exact Music Match Server is ONLINE!"
+    return "Spotify Audio Downloader is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
 # --------------------------------------------------
-# توابع ارسال پیام
+# توابع ارسال پیام به تلگرام
 # --------------------------------------------------
 def send_message(chat_id, text):
     try:
@@ -58,7 +58,7 @@ def send_document(chat_id, file_path, caption):
 # استخراج متاداده از اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
-    logger.info(f"Scraping Spotify URL: {spotify_url}")
+    logger.info(f"Extracting Spotify metadata: {spotify_url}")
     try:
         scraper = cloudscraper.create_scraper()
         res = scraper.get(spotify_url, timeout=15)
@@ -76,38 +76,52 @@ def get_spotify_track_info(spotify_url: str):
     return None, None
 
 # --------------------------------------------------
-# موتور هوشمند دانلود با تطبیق دقیق خواننده و آهنگ
+# دانلود کامل با بای‌پاس فایروال (موتور اندروید/آیفون)
 # --------------------------------------------------
 def download_exact_track(track_name: str, artist_name: str, chat_id: int):
     query = f"{artist_name} - {track_name}"
-    logger.info(f"Exact Search Query: '{query}'")
-    send_message(chat_id, f"🔍 **در حال جستجوی دقیق دیتابیس برای:**\n🎵 `{query}`")
+    logger.info(f"Searching for exact track: '{query}'")
+    send_message(chat_id, f"🔍 **جستجو و دریافت موزیک اصلی:**\n🎵 `{query}`")
 
-    output_template = f"downloads/{artist_name} - {track_name}.%(ext)s"
     os.makedirs("downloads", exist_ok=True)
+    output_template = f"downloads/{artist_name} - {track_name}.%(ext)s"
 
-    # گزینه‌های موتور جستجو و دانلود yt-dlp
-    ydl_search_opts = {
-        'extract_flat': True,
+    # تنظیمات اختصاصی yt-dlp برای دور زدن شناسایی بات روی Render
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
+        'nocheckcertificate': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb']
+            }
+        }
     }
 
-    selected_video_url = None
-    search_queries = [
-        f"ytmsearch5:{artist_name} {track_name}",
-        f"ytsearch5:{artist_name} {track_name} audio"
+    # کوئری‌های جستجو: ابتدا YouTube با کلاینت اندروید، سپس SoundCloud به عنوان پشتیبان
+    search_targets = [
+        f"ytsearch5:{artist_name} {track_name} audio",
+        f"scsearch5:{artist_name} {track_name}"
     ]
 
+    selected_url = None
     artist_clean = artist_name.lower().strip()
-    track_clean = track_name.lower().strip()
 
-    # فاز ۱: پیدا کردن دقیق‌ترین نتیجه بر اساس خواننده
-    with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
-        for sq in search_queries:
+    # گام ۱: جستجو و تطبیق نام خواننده
+    search_ydl_opts = {
+        'quiet': True, 
+        'no_warnings': True, 
+        'extractor_args': {'youtube': {'player_client': ['android', 'ios']}}
+    }
+
+    with yt_dlp.YoutubeDL(search_ydl_opts) as ydl:
+        for target in search_targets:
             try:
-                info = ydl.extract_info(sq, download=False)
-                entries = info.get('entries', [])
+                logger.info(f"Executing search query: {target}")
+                info = ydl.extract_info(target, download=False)
+                entries = info.get('entries', []) if info else []
                 
                 for entry in entries:
                     if not entry: continue
@@ -115,56 +129,54 @@ def download_exact_track(track_name: str, artist_name: str, chat_id: int):
                     uploader = entry.get('uploader', '').lower()
                     url = entry.get('url') or entry.get('webpage_url')
                     
-                    # شرط انطباق دقیق: اسم خواننده باید حتماً در عنوان یا خواننده باشد
-                    if artist_clean in title or artist_clean in uploader:
-                        selected_video_url = url
-                        logger.info(f"[MATCH FOUND] Title: '{entry.get('title')}' | URL: {url}")
+                    if artist_clean in title or artist_clean in uploader or len(entries) == 1:
+                        selected_url = url
+                        logger.info(f"[MATCHED TRACK] Title: {entry.get('title')} | URL: {url}")
                         break
                 
-                if selected_video_url:
+                if selected_url:
                     break
             except Exception as e:
-                logger.error(f"Search error for '{sq}': {e}")
+                logger.error(f"Search error for {target}: {e}")
 
-    # اگر تطبیق ۱۰۰٪ پیدا نشد، از نتایج اول اولویت‌بندی استفاده کن
-    if not selected_video_url:
-        logger.info("No strict artist match found, taking top result...")
-        try:
-            with yt_dlp.YoutubeDL(ydl_search_opts) as ydl:
-                info = ydl.extract_info(f"ytmsearch1:{artist_name} {track_name}", download=False)
-                entries = info.get('entries', [])
-                if entries and entries[0]:
-                    selected_video_url = entries[0].get('url') or entries[0].get('webpage_url')
-        except Exception as e:
-            logger.error(f"Top result fallback error: {e}")
+    # فال‌بک به اولین نتیجه در صورت عدم مطابقت عنوان
+    if not selected_url:
+        logger.info("Fallback: taking first result from ytsearch1...")
+        selected_url = f"ytsearch1:{artist_name} {track_name}"
 
-    if not selected_video_url:
-        logger.error("No stream URL found at all.")
-        return None, 0
-
-    # فاز ۲: دانلود بهترین کیفیت صوتی
-    send_message(chat_id, "📥 **موزیک اصلی یافت شد! در حال دانلود با بالاترین کیفیت...**")
+    # گام ۲: انجام دانلود واقعی
+    send_message(chat_id, "📥 **شناسه موزیک تایید شد! در حال دانلود کامل...**")
     
-    out_file_path = None
-    ydl_download_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': output_template,
-        'quiet': True,
-        'no_warnings': True,
-    }
-
     try:
-        with yt_dlp.YoutubeDL(ydl_download_opts) as ydl:
-            dl_info = ydl.extract_info(selected_video_url, download=True)
-            out_file_path = ydl.prepare_filename(dl_info)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            dl_info = ydl.extract_info(selected_url, download=True)
+            
+            if 'entries' in dl_info and dl_info['entries']:
+                dl_info = dl_info['entries'][0]
+            
+            out_file = ydl.prepare_filename(dl_info)
+            
+            # برحصور پسوند فایل صوتی خروجی
+            possible_files = [
+                out_file,
+                os.path.splitext(out_file)[0] + ".mp3",
+                os.path.splitext(out_file)[0] + ".m4a",
+                os.path.splitext(out_file)[0] + ".opus",
+                os.path.splitext(out_file)[0] + ".webm"
+            ]
+            
+            final_file = None
+            for pf in possible_files:
+                if os.path.exists(pf) and os.path.getsize(pf) > 1000000:
+                    final_file = pf
+                    break
 
-        if out_file_path and os.path.exists(out_file_path):
-            size_bytes = os.path.getsize(out_file_path)
-            size_mb = round(size_bytes / (1024 * 1024), 2)
-            logger.info(f"Successfully downloaded: {out_file_path} ({size_mb} MB)")
-            return out_file_path, size_mb
+            if final_file:
+                size_mb = round(os.path.getsize(final_file) / (1024 * 1024), 2)
+                logger.info(f"Download completed successfully: {final_file} ({size_mb} MB)")
+                return final_file, size_mb
     except Exception as e:
-        logger.error(f"Download Execution Error: {e}")
+        logger.error(f"Download execution failed: {e}")
 
     return None, 0
 
@@ -173,7 +185,7 @@ def download_exact_track(track_name: str, artist_name: str, chat_id: int):
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 [Render Direct Match Bot] Listening for messages...")
+    logger.info("🚀 [Render Fixed Bot] Active and listening...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -185,30 +197,29 @@ def start_bot_polling():
                         text = update["message"]["text"].strip()
 
                         if text == "/start":
-                            send_message(chat_id, "👋 **سلام!** لینک اسپاتیفای را بفرستید تا دقیقاً همان موزیک اصلی با کیفیت عالی دانلود و ارسال شود:")
+                            send_message(chat_id, "👋 **سلام!** لینک اسپاتیفای را ارسال کنید:")
                             continue
 
                         if "open.spotify.com/track/" in text:
                             logger.info("-" * 40)
-                            logger.info(f"NEW REQUEST from {chat_id}: {text}")
+                            logger.info(f"New download request from {chat_id}: {text}")
 
                             track_name, artist_name = get_spotify_track_info(text)
-                            logger.info(f"Parsed Metadata -> Artist: '{artist_name}', Track: '{track_name}'")
+                            logger.info(f"Metadata -> Artist: '{artist_name}', Track: '{track_name}'")
 
                             if not track_name or not artist_name:
-                                send_message(chat_id, "❌ خواندن لینک اسپاتیفای ناموفق بود.")
+                                send_message(chat_id, "❌ استخراج اطلاعات از لینک اسپاتیفای ناموفق بود.")
                                 continue
 
                             file_path, size_mb = download_exact_track(track_name, artist_name, chat_id)
 
                             if file_path and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **دانلود آهنگ اصلی با موفقیت انجام شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به صورت سند (Document)...")
+                                send_message(chat_id, f"⚡️ **دانلود موزیک با موفقیت انجام شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل...")
                                 send_document(
                                     chat_id,
                                     file_path,
-                                    f"🎼 **{artist_name} - {track_name}**\n🔊 **کیفیت:** High Quality / Original Audio\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n📦 **حجم:** `{size_mb} MB`"
                                 )
-                                # پاک‌سازی فایل از حافظه سرور
                                 if os.path.exists(file_path):
                                     os.remove(file_path)
                             else:
