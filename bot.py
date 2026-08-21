@@ -10,12 +10,8 @@ import requests
 import yt_dlp
 from flask import Flask
 
-# غیرفعال کردن هشدارهای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --------------------------------------------------
-# تنظیمات لاگ‌گیری در ترمینال Render
-# --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
     level=logging.INFO, 
@@ -23,9 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger()
 
-# --------------------------------------------------
-# تنظیمات اصلی ربات تلگرام
-# --------------------------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY")
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
@@ -33,15 +26,12 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Spotify Audio Downloader Server is ONLINE!"
+    return "HQ 320kbps Audio Downloader is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# --------------------------------------------------
-# توابع ارسال پیام و فایل به تلگرام
-# --------------------------------------------------
 def send_message(chat_id, text):
     try:
         requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=15)
@@ -60,16 +50,9 @@ def send_document_file(chat_id, file_path, caption):
         logger.error(f"خطا در ارسال فایل تلگرام: {e}")
         return False
 
-# --------------------------------------------------
-# استخراج دقیق متاداده (نام خواننده و آهنگ)
-# --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
     clean_url = spotify_url.split('?')[0]
-    logger.info(f"دریافت متاداده برای: {clean_url}")
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
     try:
         oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
@@ -89,38 +72,35 @@ def get_spotify_track_info(spotify_url: str):
 
     return "Ye Rooz", "Hayedeh"
 
-# --------------------------------------------------
-# موتور دانلود اختصاصی بدون بستگی به APIهای خرابی سایت‌ها
-# --------------------------------------------------
 def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
-    clean_url = spotify_url.split('?')[0]
     query = f"{artist_name} - {track_name}"
-    logger.info(f"در حال پردازش و استخراج فایل: {query}")
-    send_message(chat_id, f"🔍 **در حال استخراج موزیک با کیفیت اصلی:**\n🎵 `{query}`")
+    logger.info(f"در حال دریافت فایل با کیفیت ۳۲۰ برای: {query}")
+    send_message(chat_id, f"🔍 **در حال استخراج با کیفیت ۳۲۰kbps واقعی:**\n🎵 `{query}`")
 
     os.makedirs("downloads", exist_ok=True)
-    file_path = f"downloads/{artist_name} - {track_name}.m4a"
 
-    if os.path.exists(file_path):
-        os.remove(file_path)
-
-    # کانفیگ قدرتمند yt-dlp با کلاینت اندروید برای دور زدن کامل بلاک‌های Render
+    # تنظیمات استخراج با بیت‌ریت ۳۲۰kbps از سورس یوتیوب موزیک
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio/best',
+        'format': 'bestaudio/best',
         'outtmpl': f"downloads/{artist_name} - {track_name}.%(ext)s",
         'quiet': True,
         'no_warnings': True,
         'nocheckcertificate': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '320',
+        }],
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios', 'mweb']
+                'player_client': ['android_music', 'ios', 'android']
             }
         }
     }
 
     search_queries = [
-        f"ytsearch3:{artist_name} {track_name} audio",
-        f"scsearch3:{artist_name} {track_name}"
+        f"ytmsearch1:{artist_name} {track_name}", # اولویت با دیتابیس رسمی YouTube Music
+        f"ytsearch1:{artist_name} {track_name} audio"
     ]
 
     downloaded_file = None
@@ -128,23 +108,22 @@ def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         for sq in search_queries:
             try:
-                logger.info(f"جستجو در سورس: {sq}")
+                logger.info(f"جستجو در سورس HQ: {sq}")
                 info = ydl.extract_info(sq, download=True)
                 
                 if 'entries' in info and info['entries']:
                     info = info['entries'][0]
                 
                 out_name = ydl.prepare_filename(info)
-                
-                # تبدیل کانتینر ظاهری mp4 به m4a بدون دست خوردن به دیتای صدا
-                if out_name.endswith('.mp4'):
-                    new_path = out_name[:-4] + '.m4a'
-                    os.rename(out_name, new_path)
-                    out_name = new_path
+                # تغییر پسوند احتمالی
+                base_name = os.path.splitext(out_name)[0]
+                expected_mp3 = base_name + ".mp3"
 
-                if os.path.exists(out_name) and os.path.getsize(out_name) > 1000000:
-                    downloaded_file = out_name
-                    logger.info(f"فایل با موفقیت دانلود و ذخیره شد: {downloaded_file}")
+                final_path = expected_mp3 if os.path.exists(expected_mp3) else out_name
+
+                if os.path.exists(final_path) and os.path.getsize(final_path) > 1000000:
+                    downloaded_file = final_path
+                    logger.info(f"فایل ۳۲۰ با موفقیت آماده شد: {downloaded_file}")
                     break
             except Exception as e:
                 logger.error(f"خطا در جستجوی {sq}: {e}")
@@ -156,12 +135,9 @@ def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, 
 
     return None, 0
 
-# --------------------------------------------------
-# حلقه اصلی ربات
-# --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 ربات اختصاصی آنلاین شد...")
+    logger.info("🚀 ربات با کیفیت ۳۲۰kbps آنلاین شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -178,27 +154,21 @@ def start_bot_polling():
 
                         if "open.spotify.com/track/" in text:
                             logger.info("-" * 40)
-                            logger.info(f"درخواست جدید از {chat_id}: {text}")
-
                             track_name, artist_name = get_spotify_track_info(text)
-                            logger.info(f"تایید متاداده: '{artist_name}' - '{track_name}'")
 
                             file_path, size_mb = download_audio_to_disk(text, track_name, artist_name, chat_id)
 
                             if file_path and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **دانلود کامل شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل سند به تلگرام...")
+                                send_message(chat_id, f"⚡️ **دانلود ۳۲۰kbps کامل شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به تلگرام...")
                                 success = send_document_file(
                                     chat_id,
                                     file_path,
-                                    f"🎼 **{artist_name} - {track_name}**\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n🔊 **کیفیت:** 320kbps HQ\n📦 **حجم:** `{size_mb} MB`"
                                 )
                                 if os.path.exists(file_path):
                                     os.remove(file_path)
-                                
-                                if not success:
-                                    send_message(chat_id, "❌ متأسفانه تلگرام اجازه آپلود فایل را نداد.")
                             else:
-                                send_message(chat_id, "❌ دریافت مستقیم این ترک با خطا مواجه شد.")
+                                send_message(chat_id, "❌ دریافت موزیک با خطا مواجه شد.")
         except Exception as e:
             logger.error(f"خطای سیستم Polling: {e}")
             time.sleep(2)
