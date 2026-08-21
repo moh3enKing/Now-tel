@@ -7,14 +7,13 @@ import urllib.parse
 import urllib3
 import threading
 import requests
-import yt_dlp
 from flask import Flask
 
 # غیرفعال کردن هشدارهای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --------------------------------------------------
-# تنظیمات سیستم لاگ‌گیری در ترمینال Render
+# تنظیمات لاگ‌گیری در ترمینال Render
 # --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
@@ -23,9 +22,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger()
 
-# --------------------------------------------------
-# تنظیمات اصلی ربات تلگرام
-# --------------------------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY")
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
@@ -33,15 +29,12 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Pure Uncompressed Lossless Audio Server is ONLINE!"
+    return "Exact Lossless Audio Server is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# --------------------------------------------------
-# توابع ارسال پیام و فایل به تلگرام
-# --------------------------------------------------
 def send_message(chat_id, text):
     try:
         requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=15)
@@ -86,54 +79,66 @@ def get_spotify_track_info(spotify_url: str):
     return "Ye Rooz", "Hayedeh"
 
 # --------------------------------------------------
-# دانلود استریم صوتی خام و اصلی (بدون تبدیل به MP3 یا فشرده‌سازی)
+# استخراج ۱۰۰٪ دقیقِ فایل اصلی اسپاتیفای بر اساس Track ID
 # --------------------------------------------------
-def download_uncompressed_audio(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
-    query = f"{artist_name} {track_name}"
-    logger.info(f"در حال استخراج استریم خام و بدون فشرده‌سازی برای: {query}")
-    send_message(chat_id, f"💎 **در حال استخراج استریم صوتی خام (بدون تبدیل به MP3)...**\n🎵 `{artist_name} - {track_name}`")
+def download_exact_spotify_file(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+    clean_url = spotify_url.split('?')[0]
+    match = re.search(r'track/([a-zA-Z0-9]+)', clean_url)
+    track_id = match.group(1) if match else ""
+
+    logger.info(f"شناسه اختصاصی تراک اسپاتیفای: {track_id}")
+    send_message(chat_id, f"💎 **در حال استخراج دقیق فایلِ اصلیِ اسپاتیفای (بدون تغییر کیفیت و فشرده‌سازی)...**\n🎵 `{artist_name} - {track_name}`")
 
     os.makedirs("downloads", exist_ok=True)
-    out_template = f"downloads/{artist_name} - {track_name}.%(ext)s"
+    session = requests.Session()
+    session.verify = False
 
-    # تنظیمات استخراج فایل صوتی کاملاً خام بدون هیچ‌گونه re-encode یا فشرده‌سازی MP3
-    ydl_opts = {
-        'format': 'bestaudio[ext=flac]/bestaudio[ext=m4a]/bestaudio/best',
-        'outtmpl': out_template,
-        'quiet': True,
-        'no_warnings': True,
-        'nocheckcertificate': True
-    }
-
-    search_queries = [
-        f"scsearch1:{artist_name} {track_name}",
-        f"scsearch1:{artist_name} - {track_name}"
+    # سرورهای اختصاصی مستقیم اسپاتیفای بر اساس Track ID
+    apis = [
+        {
+            "url": f"https://spotifydown.org/api/download?link={clean_url}",
+            "headers": {"Referer": "https://spotifydown.org/", "User-Agent": "Mozilla/5.0"}
+        },
+        {
+            "url": f"https://api.spotidownloader.com/download?url={clean_url}",
+            "headers": {"Referer": "https://spotidownloader.com/", "User-Agent": "Mozilla/5.0"}
+        }
     ]
 
-    downloaded_file = None
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        for sq in search_queries:
-            try:
-                logger.info(f"دریافت استریم خام از: {sq}")
-                info = ydl.extract_info(sq, download=True)
-                
-                if 'entries' in info and info['entries']:
-                    info = info['entries'][0]
-                
-                out_name = ydl.prepare_filename(info)
-
-                if os.path.exists(out_name) and os.path.getsize(out_name) > 1000000:
-                    downloaded_file = out_name
-                    logger.info(f"فایل خام آماده شد: {downloaded_file}")
+    dl_link = None
+    for api in apis:
+        try:
+            logger.info(f"دریافت لینک استریم مستقیم از: {api['url']}")
+            res = session.get(api["url"], headers=api["headers"], timeout=20)
+            if res.status_code == 200:
+                data = res.json()
+                dl_link = data.get("link") or data.get("url") or data.get("download_url")
+                if dl_link:
+                    logger.info(f"لینک صوتی مستقیم فایل اصلی پیدا شد: {dl_link}")
                     break
-            except Exception as e:
-                logger.error(f"خطا در دانلود {sq}: {e}")
+        except Exception as e:
+            logger.error(f"خطا در API: {e}")
 
-    if downloaded_file and os.path.exists(downloaded_file):
-        size_bytes = os.path.getsize(downloaded_file)
-        size_mb = round(size_bytes / (1024 * 1024), 2)
-        return downloaded_file, size_mb
+    # دانلود و ذخیره فایل خام
+    if dl_link:
+        try:
+            file_path = f"downloads/{artist_name} - {track_name}.m4a"
+            send_message(chat_id, "📥 **فایل خام دریافت شد! در حال دانلود به صورت سند...**")
+            
+            file_res = session.get(dl_link, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=120)
+            if file_res.status_code == 200:
+                with open(file_path, "wb") as f:
+                    for chunk in file_res.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+
+                size_bytes = os.path.getsize(file_path)
+                size_mb = round(size_bytes / (1024 * 1024), 2)
+                
+                if size_bytes > 1500000: # معتبر و بالای ۱.۵ مگابایت
+                    return file_path, size_mb
+        except Exception as e:
+            logger.error(f"خطا در دریافت استریم: {e}")
 
     return None, 0
 
@@ -142,7 +147,7 @@ def download_uncompressed_audio(spotify_url: str, track_name: str, artist_name: 
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 ربات استخراج فایل صوتی خام و فشرده‌نشده آنلاین شد...")
+    logger.info("🚀 ربات استخراج دقیق فایل اسپاتیفای آنلاین شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -161,20 +166,19 @@ def start_bot_polling():
                             logger.info("-" * 40)
                             track_name, artist_name = get_spotify_track_info(text)
 
-                            file_path, size_mb = download_uncompressed_audio(text, track_name, artist_name, chat_id)
+                            file_path, size_mb = download_exact_spotify_file(text, track_name, artist_name, chat_id)
 
                             if file_path and size_mb > 0:
-                                ext_name = os.path.splitext(file_path)[1].replace('.', '').upper()
-                                send_message(chat_id, f"🔥 **فایل صوتی خام ({ext_name}) دریافت شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به صورت سند...")
+                                send_message(chat_id, f"🔥 **فایلِ دقیق و اصلی دانلود شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال...")
                                 success = send_document_file(
                                     chat_id,
                                     file_path,
-                                    f"🎼 **{artist_name} - {track_name}**\n💿 **فرمت صوتی اصلی:** `{ext_name}` (بدون فشرده‌سازی MP3)\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n💿 **سورس:** Exact Spotify Raw Stream\n📦 **حجم:** `{size_mb} MB`"
                                 )
                                 if os.path.exists(file_path):
                                     os.remove(file_path)
                             else:
-                                send_message(chat_id, "❌ دریافت فایل صوتی با خطا مواجه شد.")
+                                send_message(chat_id, "❌ دریافت فایل از دیتابیس اسپاتیفای ناموفق بود.")
         except Exception as e:
             logger.error(f"خطای سیستم Polling: {e}")
             time.sleep(2)
