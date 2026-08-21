@@ -3,13 +3,12 @@ import os
 import sys
 import time
 import logging
+import ssl
 import urllib.parse
 import urllib3
 import threading
 import requests
 import cloudscraper
-from requests.adapters import HTTPAdapter
-from urllib3.util.ssl_ import create_urllib3_context
 from flask import Flask
 
 # غیرفعال کردن تمام هشدارهای SSL
@@ -24,17 +23,6 @@ logging.basicConfig(
     format='[%(levelname)s] %(message)s'
 )
 logger = logging.getLogger()
-
-# --------------------------------------------------
-# آداپتور اختصاصی برای دور زدن خطای CERT_NONE و check_hostname
-# --------------------------------------------------
-class SSLBypassAdapter(HTTPAdapter):
-    def init_poolmanager(self, *args, **kwargs):
-        ctx = create_urllib3_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = urllib3.util.ssl_.CERT_NONE
-        kwargs['ssl_context'] = ctx
-        return super(SSLBypassAdapter, self).init_poolmanager(*args, **kwargs)
 
 # --------------------------------------------------
 # تنظیمات اصلی ربات تلگرام
@@ -146,11 +134,10 @@ def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, c
     except Exception as e:
         logger.error(f"خطا در پیدا کردن آی‌دی: {e}")
 
-    # ۲. ساخت جلسه اختصاصی با آداپتور Bypass
-    scraper = cloudscraper.create_scraper()
-    adapter = SSLBypassAdapter()
-    scraper.mount('https://', adapter)
-    scraper.mount('http://', adapter)
+    # ۲. ساخت Cloudscraper
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+    )
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -169,7 +156,7 @@ def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, c
         send_message(chat_id, f"📡 **اتصال به گیت‌وی شماره {index}...**")
 
         try:
-            res = scraper.get(gateway, headers=headers, timeout=35)
+            res = scraper.get(gateway, headers=headers, timeout=35, verify=False)
             logger.info(f"کد وضعیت سرور {index}: {res.status_code}")
 
             if res.status_code == 200:
@@ -199,7 +186,7 @@ def download_pure_cd_flac(spotify_url: str, track_name: str, artist_name: str, c
                     logger.info(f"لینک مستقیم استخراج شد: {dl_link}")
                     send_message(chat_id, "📥 **لینک دانلود فایل FLAC تایید شد! در حال دریافت فایل خام...**")
                     
-                    file_res = scraper.get(dl_link, headers=headers, timeout=120)
+                    file_res = scraper.get(dl_link, headers=headers, timeout=120, verify=False)
                     content = file_res.content
                     size_mb = round(len(content) / (1024 * 1024), 2)
 
