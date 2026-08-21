@@ -1,4 +1,2 @@
-requests>=2.31.0
-Flask>=3.0.0
-yt-dlp>=2024.0.0
-cloudscraper>=1.2.71
+python-telegram-bot>=20.0
+spotdl>=4.2.0
