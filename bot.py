@@ -2,11 +2,31 @@ import re
 import os
 import time
 import requests
+import threading
+from flask import Flask
 
-# توکن جای‌گذاری شده شما
+# --------------------------------------------------
+# توکن ربات تلگرام شما
+# --------------------------------------------------
 BOT_TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
+# --------------------------------------------------
+# وب‌سرور Flask برای فعال نگه‌داشتن پلن رایگان Web Service در Render
+# --------------------------------------------------
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Spotify Lossless Bot 1 is running on Render Free Tier!"
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
+
+# --------------------------------------------------
+# سرویس استخراج لینک و دانلود کیفیت اصلی FLAC
+# --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
     """استخراج نام آهنگ و خواننده از لینک اسپاتیفای"""
     try:
@@ -29,7 +49,7 @@ def get_spotify_track_info(spotify_url: str):
     return None, None
 
 def download_lossless_flac(track_name: str, artist_name: str):
-    """دانلود فایل بدون افت کیفیت FLAC از دیتابیس Hi-Res"""
+    """دانلود فایل FLAC بدون فشرده‌سازی"""
     try:
         query = f"{artist_name} {track_name}"
         search_api = f"https://spotidownloader.com/api/download-track?q={requests.utils.quote(query)}"
@@ -48,7 +68,7 @@ def download_lossless_flac(track_name: str, artist_name: str):
     return None, None
 
 def send_document(chat_id, file_bytes, filename, caption):
-    """ارسال به صورت Document فایل خام بدون فشرده‌سازی"""
+    """ارسال به صورت Document جهت جلوگیری از فشرده‌سازی تلگرام"""
     files = {"document": (filename, file_bytes)}
     data = {"chat_id": chat_id, "caption": caption}
     return requests.post(BASE_URL + "sendDocument", data=data, files=files).json()
@@ -56,9 +76,9 @@ def send_document(chat_id, file_bytes, filename, caption):
 def send_message(chat_id, text):
     return requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text}).json()
 
-def main():
+def start_bot_polling():
     offset = 0
-    print("🚀 [Render] ربات تست شماره ۱ (Lossless FLAC) روشن شد...")
+    print("🚀 [Render] ربات تست شماره ۱ (Lossless FLAC) روی پلن رایگان فعال شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -78,7 +98,7 @@ def main():
                             track_name, artist_name = get_spotify_track_info(text)
                             
                             if track_name:
-                                send_message(chat_id, f"🔍 در حال دانلود کیفیت Lossless FLAC برای:\n🎵 {artist_name} - {track_name}")
+                                send_message(chat_id, f"🔍 در حال دریافت فایل اصلی (Lossless FLAC) برای:\n🎵 {artist_name} - {track_name}")
                                 file_bytes, filename = download_lossless_flac(track_name, artist_name)
                                 
                                 if file_bytes:
@@ -89,12 +109,15 @@ def main():
                                         f"🔊 **{artist_name} - {track_name}**\n💎 کیفیت: Lossless FLAC (Original Uncompressed)"
                                     )
                                 else:
-                                    send_message(chat_id, "❌ فایل FLAC مستقیم در دیتابیس آنلاین پیدا نشد.")
+                                    send_message(chat_id, "❌ فایل FLAC در دیتابیس مستقیم یافت نشد.")
                             else:
-                                send_message(chat_id, "❌ خواندن لینک اسپاتیفای ناموفق بود.")
+                                send_message(chat_id, "❌ استخراج اطلاعات از لینک اسپاتیفای ناموفق بود.")
         except Exception as e:
             time.sleep(2)
 
 if __name__ == "__main__":
-    main()
+    # اجرای وب‌سرور جهت پورت رندر
+    threading.Thread(target=run_web_server, daemon=True).start()
+    # اجرای ربات
+    start_bot_polling()
 
