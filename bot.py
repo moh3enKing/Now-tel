@@ -2,12 +2,13 @@ import re
 import os
 import time
 import requests
+import traceback
 import urllib.parse
 import threading
 from flask import Flask
 
 # --------------------------------------------------
-# توکن ربات تلگرام شما
+# تنظیمات اصلی ربات تلگرام
 # --------------------------------------------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY")
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
@@ -16,12 +17,15 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Spotify HQ Full Downloader is running!"
+    return "Spotify Bot with Terminal Debugger is running!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
+# --------------------------------------------------
+# توابع ارسال پیام تلگرام
+# --------------------------------------------------
 def send_message(chat_id, text):
     return requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).json()
 
@@ -30,36 +34,52 @@ def send_document(chat_id, file_bytes, filename, caption):
     data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
     return requests.post(BASE_URL + "sendDocument", data=data, files=files).json()
 
+# --------------------------------------------------
+# استخراج اطلاعات لینک اسپاتیفای
+# --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
-    """استخراج دقیق عنوان و خواننده از صفحه اسپاتیفای"""
+    """استخراج عنوان و خواننده با لاگ کامل ترمینال"""
+    print(f"\n[DEBUG-SCRAPE] Starting Spotify scraping for: {spotify_url}")
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         res = requests.get(spotify_url, headers=headers, timeout=12)
+        print(f"[DEBUG-SCRAPE] Response status code: {res.status_code}")
         
         m = re.search(r'<title>(.*?) - song and lyrics by (.*?) \| Spotify</title>', res.text)
         if m:
+            print(f"[DEBUG-SCRAPE] Found Match Pattern 1: {m.group(1)} | {m.group(2)}")
             return m.group(1).strip(), m.group(2).strip()
             
         m2 = re.search(r'<title>(.*?) - Single by (.*?) \| Spotify</title>', res.text)
         if m2:
+            print(f"[DEBUG-SCRAPE] Found Match Pattern 2: {m2.group(1)} | {m2.group(2)}")
             return m2.group(1).strip(), m2.group(2).strip()
             
         m3 = re.search(r'<title>(.*?) - song by (.*?) \| Spotify</title>', res.text)
         if m3:
+            print(f"[DEBUG-SCRAPE] Found Match Pattern 3: {m3.group(1)} | {m3.group(2)}")
             return m3.group(1).strip(), m3.group(2).strip()
+            
+        print("[DEBUG-SCRAPE] No match pattern found in HTML title!")
     except Exception as e:
-        print(f"Error scraping Spotify link: {e}")
+        print(f"[DEBUG-SCRAPE-ERROR] Failed scraping: {e}")
+        print(traceback.format_exc())
     return None, None
 
 def download_full_hq_audio(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
     """
-    دانلود فایل کامل آهنگ با حداکثر کیفیت واقعی 320kbps / Lossless
+    دانلود مستقیم با دیباگر خط به‌خط ترمینال رندر
     """
-    send_message(chat_id, f"🔍 **ارتباط با سرورهای دانلود مستقیم...**\n🎵 `{artist_name} - {track_name}`")
+    query = f"{artist_name} {track_name}"
+    send_message(chat_id, f"🔍 **ارتباط با سرورهای دانلود مستقیم...**\n🎵 `{query}`")
 
-    # API 1: Spotisongdownloader Direct Engine
+    # ----------------------------------------------------
+    # ENGINE 1: Spotisongdownloader
+    # ----------------------------------------------------
+    print(f"\n=================== ENGINE 1 TRY ===================")
+    print(f"[ENGINE-1] Target URL: {spotify_url}")
     try:
-        send_message(chat_id, "📡 **امتحان سرور اول (Spotisong Engine)...**")
+        send_message(chat_id, "📡 **امتحان سرور ۱ (Spotisong Engine)...**")
         api_url = "https://spotisongdownloader.com/api/composer/spotify/download_song.php"
         payload = {"url": spotify_url}
         headers = {
@@ -67,43 +87,105 @@ def download_full_hq_audio(spotify_url: str, track_name: str, artist_name: str, 
             "Content-Type": "application/x-www-form-urlencoded"
         }
         res = requests.post(api_url, data=payload, headers=headers, timeout=20)
+        print(f"[ENGINE-1] HTTP Status: {res.status_code}")
+        print(f"[ENGINE-1] Response Raw Text: {res.text[:300]}")
+        
         if res.status_code == 200:
             data = res.json()
             dl_url = data.get("dlink") or data.get("song")
+            print(f"[ENGINE-1] Parsed Download URL: {dl_url}")
+            
             if dl_url:
-                send_message(chat_id, "⚡️ **لینک مستقیم دریافت شد!** در حال دریافت فایل کامل...")
+                send_message(chat_id, "⚡️ **لینک دانلود دریافت شد!** در حال دریافت فایل...")
                 file_res = requests.get(dl_url, headers=headers, timeout=90)
-                if file_res.status_code == 200 and len(file_res.content) > 2000000: # حداقل ۲ مگابایت (کامل)
+                print(f"[ENGINE-1-FILE] Status: {file_res.status_code}, Length: {len(file_res.content)} bytes")
+                
+                if file_res.status_code == 200 and len(file_res.content) > 1500000:
                     size_mb = round(len(file_res.content) / (1024 * 1024), 2)
                     filename = f"{artist_name} - {track_name}.mp3"
+                    print(f"[ENGINE-1] SUCCESS! File Size: {size_mb} MB")
                     return file_res.content, filename, size_mb
+                else:
+                    print(f"[ENGINE-1-FAIL] File size too small (< 1.5MB) or invalid status code.")
     except Exception as e:
-        print(f"Engine 1 failed: {e}")
+        print(f"[ENGINE-1-EXCEPTION] Error: {e}")
+        print(traceback.format_exc())
 
-    # API 2: Soundcloud / High Quality YouTube Search Engine Fallback
+    # ----------------------------------------------------
+    # ENGINE 2: SpotiDownloader API
+    # ----------------------------------------------------
+    print(f"\n=================== ENGINE 2 TRY ===================")
+    print(f"[ENGINE-2] Search Query: {query}")
     try:
-        send_message(chat_id, "📡 **امتحان سرور دوم (HQ Audio Engine)...**")
-        query = f"{artist_name} {track_name}"
+        send_message(chat_id, "📡 **امتحان سرور ۲ (Spotidownloader Engine)...**")
         search_api = f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(query)}"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(search_api, headers=headers, timeout=20)
+        print(f"[ENGINE-2] HTTP Status: {res.status_code}")
+        print(f"[ENGINE-2] Response Raw Text: {res.text[:300]}")
+        
         if res.status_code == 200:
             data = res.json()
             dl_url = data.get("download_url")
+            print(f"[ENGINE-2] Parsed Download URL: {dl_url}")
+            
             if dl_url:
                 file_res = requests.get(dl_url, headers=headers, timeout=90)
-                if file_res.status_code == 200 and len(file_res.content) > 2000000:
+                print(f"[ENGINE-2-FILE] Status: {file_res.status_code}, Length: {len(file_res.content)} bytes")
+                
+                if file_res.status_code == 200 and len(file_res.content) > 1500000:
                     size_mb = round(len(file_res.content) / (1024 * 1024), 2)
-                    filename = f"{artist_name} - {track_name} [320kbps].mp3"
+                    filename = f"{artist_name} - {track_name} [320k].mp3"
+                    print(f"[ENGINE-2] SUCCESS! File Size: {size_mb} MB")
+                    return file_res.content, filename, size_mb
+                else:
+                    print(f"[ENGINE-2-FAIL] File size too small (< 1.5MB) or invalid status code.")
+    except Exception as e:
+        print(f"[ENGINE-2-EXCEPTION] Error: {e}")
+        print(traceback.format_exc())
+
+    # ----------------------------------------------------
+    # ENGINE 3: Cobalt Open API
+    # ----------------------------------------------------
+    print(f"\n=================== ENGINE 3 TRY ===================")
+    print(f"[ENGINE-3] Target URL: {spotify_url}")
+    try:
+        send_message(chat_id, "📡 **امتحان سرور ۳ (Cobalt Engine)...**")
+        cobalt_url = "https://co.wuk.sh/api/json"
+        payload = {"url": spotify_url, "aFormat": "mp3"}
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0"
+        }
+        res = requests.post(cobalt_url, json=payload, headers=headers, timeout=20)
+        print(f"[ENGINE-3] HTTP Status: {res.status_code}")
+        print(f"[ENGINE-3] Response Raw Text: {res.text[:300]}")
+        
+        if res.status_code == 200:
+            data = res.json()
+            dl_url = data.get("url")
+            print(f"[ENGINE-3] Parsed Download URL: {dl_url}")
+            
+            if dl_url:
+                file_res = requests.get(dl_url, timeout=90)
+                print(f"[ENGINE-3-FILE] Status: {file_res.status_code}, Length: {len(file_res.content)} bytes")
+                
+                if file_res.status_code == 200 and len(file_res.content) > 1500000:
+                    size_mb = round(len(file_res.content) / (1024 * 1024), 2)
+                    filename = f"{artist_name} - {track_name}.mp3"
+                    print(f"[ENGINE-3] SUCCESS! File Size: {size_mb} MB")
                     return file_res.content, filename, size_mb
     except Exception as e:
-        print(f"Engine 2 failed: {e}")
+        print(f"[ENGINE-3-EXCEPTION] Error: {e}")
+        print(traceback.format_exc())
 
+    print(f"\n[SUMMARY] ALL ENGINES FAILED FOR QUERY: {query}\n")
     return None, None, 0
 
 def start_bot_polling():
     offset = 0
-    print("🚀 [Render] ربات دانلود کامل آهنگ‌های اسپاتیفای آنلاین شد...")
+    print("🚀 [Render Terminal Debugger] Bot listening for updates...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -115,11 +197,16 @@ def start_bot_polling():
                         text = update["message"]["text"].strip()
 
                         if text == "/start":
-                            send_message(chat_id, "👋 **ربات دانلود کامل آهنگ از اسپاتیفای**\n\nلینک موزیک مورد نظر را بفرستید:")
+                            send_message(chat_id, "👋 **ربات دانلود موزیک اسپاتیفای (ورژن دیباگر ترمینال)**\n\nلینک موزیک را ارسال کنید:")
                             continue
 
                         if "open.spotify.com/track/" in text:
+                            print(f"\n--------------------------------------------------")
+                            print(f"[NEW REQUEST] User ID: {chat_id} Sent Link: {text}")
+                            
                             track_name, artist_name = get_spotify_track_info(text)
+                            print(f"[PARSED METADATA] Track: '{track_name}' | Artist: '{artist_name}'")
+                            
                             if not track_name:
                                 send_message(chat_id, "❌ استخراج لینک اسپاتیفای ناموفق بود.")
                                 continue
@@ -127,16 +214,17 @@ def start_bot_polling():
                             audio_bytes, filename, size_mb = download_full_hq_audio(text, track_name, artist_name, chat_id)
 
                             if audio_bytes and filename:
-                                send_message(chat_id, f"⚡️ **دانلود آهنگ کامل انجام شد!**\n📦 **حجم فایل:** `{size_mb} MB`\nدر حال ارسال فایل...")
+                                send_message(chat_id, f"⚡️ **دانلود آهنگ با موفقیت انجام شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل...")
                                 send_document(
                                     chat_id,
                                     audio_bytes,
                                     filename,
-                                    f"🎼 **{artist_name} - {track_name}**\n🔊 **کیفیت:** 320kbps / Original Audio\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n📦 **حجم:** `{size_mb} MB`"
                                 )
                             else:
-                                send_message(chat_id, "❌ خطایی در استخراج فایل کامل آهنگ از سرورها رخ داد.")
+                                send_message(chat_id, "❌ خطایی در استخراج فایل کامل از سرورها رخ داد (علت دقیق در ترمینال رندر لاگ شد).")
         except Exception as e:
+            print(f"[POLLING ERROR] {e}")
             time.sleep(2)
 
 if __name__ == "__main__":
