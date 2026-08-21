@@ -1,242 +1,100 @@
-# ============================================================
-# ربات واسط هوشمند + سیستم لاگین تلگرامی اختصاصی بدون نیاز به ترمینال/iSH
-# ============================================================
-
-import os
 import re
-import json
-import asyncio
-import logging
-import urllib.parse
+import os
+import time
 import requests
-from flask import Flask
-from threading import Thread
 
-# فیکس Event Loop در پایتون ۳.۱۰ به بالا
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
+# توکن جای‌گذاری شده شما
+BOT_TOKEN = "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY"
+BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/"
 
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PasswordHashInvalid
-
-# ============================================================
-# تنظیمات اصلی (استفاده از API عمومی رسمی تلگرام وب)
-# ============================================================
-API_ID = 2040  
-API_HASH = "b18441a12607e109353316371075a3f1"  
-
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8135900333:AAH2MTWecY7q3le28GZPppbJhnVwq276xfY")
-SESSION_STRING = os.environ.get("SESSION_STRING", "")
-
-TARGET_BOT = "AppleMusic_DL_bot"
-PREFERRED_QUALITY = "ALAC — Lossless"
-
-# آیدی تلگرامی سازنده ربات (برای امنیت دستور /login)
-ADMIN_ID = None  # اولین کسی که /start یا /login بزند ادمین می‌شود
-
-# وضعیت‌های لاگین موقت
-user_login_states = {}
-pending_requests = {}
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
-logger = logging.getLogger("BridgeBot")
-
-# ============================================================
-# سرور Flask جهت نگهداشت آنلاین در Render
-# ============================================================
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Telegram Lossless Bridge Bot is Running!"
-
-def run_web():
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
-
-Thread(target=run_web, daemon=True).start()
-
-# ============================================================
-# کلاینت اصلی ربات
-# ============================================================
-bot_app = Client("bot_side", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# کلاینت اکانت واسط
-user_app = None
-if SESSION_STRING:
-    user_app = Client("user_side", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
-
-# ============================================================
-# تبدیل لینک اسپاتیفای به لینک اپل موزیک
-# ============================================================
-def spotify_to_apple_music(spotify_url):
+def get_spotify_track_info(spotify_url: str):
+    """استخراج نام آهنگ و خواننده از لینک اسپاتیفای"""
     try:
-        oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(spotify_url)}"
-        res = requests.get(oembed_url, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            title = data.get("title", "")
-            artist = data.get("author_name", "")
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        res = requests.get(spotify_url, headers=headers, timeout=12)
+        
+        m = re.search(r'<title>(.*?) - song and lyrics by (.*?) \| Spotify</title>', res.text)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
             
-            if " - " in title and not artist:
-                parts = title.split(" - ", 1)
-                artist, title = parts[0].strip(), parts[1].strip()
-
-            search_query = f"{artist} {title}".strip()
+        m2 = re.search(r'<title>(.*?) - Single by (.*?) \| Spotify</title>', res.text)
+        if m2:
+            return m2.group(1).strip(), m2.group(2).strip()
             
-            itunes_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(search_query)}&entity=song&limit=1"
-            it_res = requests.get(itunes_url, timeout=5)
-            if it_res.status_code == 200:
-                results = it_res.json().get("results", [])
-                if results:
-                    return results[0].get("trackViewUrl")
+        m3 = re.search(r'<title>(.*?) - song by (.*?) \| Spotify</title>', res.text)
+        if m3:
+            return m3.group(1).strip(), m3.group(2).strip()
     except Exception as e:
-        logger.error(f"⚠️ Error Spotify to Apple: {e}")
-    return None
+        print(f"Error scraping Spotify link: {e}")
+    return None, None
 
-# ============================================================
-# دستورات ربات (شامل سیستم لاگین درون‌برنامه‌ای)
-# ============================================================
-@bot_app.on_message(filters.command("start"))
-async def start_handler(client: Client, message: Message):
-    global ADMIN_ID
-    if not ADMIN_ID:
-        ADMIN_ID = message.from_user.id
-
-    text = (
-        f"سلام **{message.from_user.first_name}** عزیز 👋\n\n"
-        "🎵 **ربات دانلود مستقیم کیفیت استودیویی (Lossless / ALAC)**\n\n"
-        "لینک **اسپاتیفای** یا **اپل موزیک** را ارسال کنید.\n\n"
-    )
-    if not user_app:
-        text += "⚠️ **هشدار:** اکانت واسط هنوز فعال نشده است. برای فعال‌سازی دستور /login را بزنید."
-    await message.reply_text(text)
-
-# سیستم ساخت SESSION_STRING مستقیماً درون تلگرام
-@bot_app.on_message(filters.command("login") & filters.private)
-async def login_command(client: Client, message: Message):
-    user_id = message.from_user.id
-    user_login_states[user_id] = {"step": "phone", "client": None}
-    await message.reply_text("📱 لطفاً **شماره تلفن** اکانت تلگرام واسط را با کد کشور بفرستید:\n\nمثال: `+989123456789`")
-
-@bot_app.on_message(filters.text & filters.private)
-async def handle_all_messages(client: Client, message: Message):
-    user_id = message.from_user.id
-    text = message.text.strip()
-
-    # ۱. فرآیند لاگین تلگرامی
-    if user_id in user_login_states:
-        state = user_login_states[user_id]
+def download_lossless_flac(track_name: str, artist_name: str):
+    """دانلود فایل بدون افت کیفیت FLAC از دیتابیس Hi-Res"""
+    try:
+        query = f"{artist_name} {track_name}"
+        search_api = f"https://spotidownloader.com/api/download-track?q={requests.utils.quote(query)}"
+        headers = {"User-Agent": "Mozilla/5.0"}
         
-        # گام دریافت شماره تلفن
-        if state["step"] == "phone":
-            msg = await message.reply_text("⏳ در حال ارسال کد تأیید به تلگرام شما...")
-            try:
-                temp_client = Client(f"temp_{user_id}", api_id=API_ID, api_hash=API_HASH, in_memory=True)
-                await temp_client.connect()
-                code_info = await temp_client.send_code(text)
-                
-                state["client"] = temp_client
-                state["phone"] = text
-                state["phone_code_hash"] = code_info.phone_code_hash
-                state["step"] = "code"
-                
-                await msg.edit_text("✅ کد ۵ رقمی تلگرام برای شما ارسال شد.\nلطفاً کد را بفرستید (بین اعداد فاصله بگذارید، مثلاً: `1 2 3 4 5`)")
-            except Exception as e:
-                await msg.edit_text(f"❌ خطا در ارسال شماره: {e}\nلطفاً دوباره /login بزنید.")
-                user_login_states.pop(user_id, None)
-            return
-
-        # گام دریافت کد ۵ رقمی
-        elif state["step"] == "code":
-            clean_code = text.replace(" ", "").replace("-", "")
-            temp_client = state["client"]
-            msg = await message.reply_text("⏳ در حال بررسی کد...")
-            try:
-                await temp_client.sign_in(
-                    phone_number=state["phone"],
-                    phone_code_hash=state["phone_code_hash"],
-                    phone_code=clean_code
-                )
-                
-                # لاگین موفق - تولید Session String
-                string_session = await temp_client.export_session_string()
-                await msg.edit_text(
-                    "🎉 **لاگین با موفقیت انجام شد!**\n\n"
-                    "کد زیر همان `SESSION_STRING` شماست. آن را کپی کنید و در متغیرهای محیطی Render قرار دهید:\n\n"
-                    f"`{string_session}`"
-                )
-                await temp_client.disconnect()
-                user_login_states.pop(user_id, None)
-            except SessionPasswordNeeded:
-                state["step"] = "password"
-                await msg.edit_text("🔐 این اکانت تایید دو مرحله‌ای (Two-Step Verification) دارد.\nلطفاً رمز عبور خود را وارد کنید:")
-            except Exception as e:
-                await msg.edit_text(f"❌ کد اشتباه است یا خطایی رخ داد: {e}\nلطفاً دوباره /login بزنید.")
-                user_login_states.pop(user_id, None)
-            return
-
-        # گام تایید دو مرحله‌ای
-        elif state["step"] == "password":
-            temp_client = state["client"]
-            msg = await message.reply_text("⏳ در حال تایید رمز عبور...")
-            try:
-                await temp_client.check_password(text)
-                string_session = await temp_client.export_session_string()
-                await msg.edit_text(
-                    "🎉 **لاگین با موفقیت انجام شد!**\n\n"
-                    "کد زیر همان `SESSION_STRING` شماست. آن را کپی کنید و در بخش Environment متغیر `SESSION_STRING` بگذارید:\n\n"
-                    f"`{string_session}`"
-                )
-                await temp_client.disconnect()
-                user_login_states.pop(user_id, None)
-            except Exception as e:
-                await msg.edit_text(f"❌ رمز عبور اشتباه است: {e}\nلطفاً دوباره /login بزنید.")
-                user_login_states.pop(user_id, None)
-            return
-
-    # ۲. پردازش لینک‌های موزیک
-    if not user_app:
-        await message.reply_text("❌ اکانت واسط فعال نیست. ابتدا دستور /login را بزنید و Session دریافت شده را در Render بگذارید.")
-        return
-
-    apple_url = None
-    if "music.apple.com" in text:
-        apple_url = text
-    elif "spotify.com" in text:
-        status_msg = await message.reply_text("🔎 **در حال تبدیل لینک اسپاتیفای به اپل موزیک...**")
-        apple_url = spotify_to_apple_music(text)
-        if not apple_url:
-            await status_msg.edit_text("❌ این اثر در اپل موزیک یافت نشد.")
-            return
-        await status_msg.delete()
+        response = requests.get(search_api, headers=headers, timeout=15)
+        data = response.json()
         
-    if apple_url:
-        status = await message.reply_text("🚀 **در حال استخراج کیفیت اورجینال ALAC/Lossless...**")
+        if data.get("status") == "success" and data.get("download_url"):
+            file_url = data["download_url"]
+            file_res = requests.get(file_url, timeout=45)
+            if file_res.status_code == 200:
+                return file_res.content, f"{artist_name} - {track_name}.flac"
+    except Exception as e:
+        print(f"Error downloading FLAC: {e}")
+    return None, None
+
+def send_document(chat_id, file_bytes, filename, caption):
+    """ارسال به صورت Document فایل خام بدون فشرده‌سازی"""
+    files = {"document": (filename, file_bytes)}
+    data = {"chat_id": chat_id, "caption": caption}
+    return requests.post(BASE_URL + "sendDocument", data=data, files=files).json()
+
+def send_message(chat_id, text):
+    return requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text}).json()
+
+def main():
+    offset = 0
+    print("🚀 [Render] ربات تست شماره ۱ (Lossless FLAC) روشن شد...")
+    while True:
         try:
-            sent_msg = await user_app.send_message(TARGET_BOT, apple_url)
-            pending_requests[sent_msg.id] = {
-                "user_chat_id": message.chat.id,
-                "status_msg_id": status.id
-            }
-        except Exception as e:
-            await status.edit_text(f"❌ خطای ارتباط با ربات هدف: {e}")
+            res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
+            if "result" in res:
+                for update in res["result"]:
+                    offset = update["update_id"] + 1
+                    if "message" in update and "text" in update["message"]:
+                        chat_id = update["message"]["chat"]["id"]
+                        text = update["message"]["text"].strip()
+                        
+                        if text == "/start":
+                            send_message(chat_id, "👋 سلام! لینک اسپاتیفای (Spotify Track Link) را ارسال کنید:")
+                            continue
 
-# ============================================================
-# استارت برنامه‌ها
-# ============================================================
-async def main():
-    await bot_app.start()
-    if user_app:
-        await user_app.start()
-        logger.info("✅ اکانت واسط UserBot فعال است.")
-    logger.info("🚀 ربات با موفقیت روشن شد!")
-    await asyncio.Event().wait()
+                        if "open.spotify.com/track/" in text:
+                            send_message(chat_id, "⏳ در حال استخراج لینک اسپاتیفای...")
+                            track_name, artist_name = get_spotify_track_info(text)
+                            
+                            if track_name:
+                                send_message(chat_id, f"🔍 در حال دانلود کیفیت Lossless FLAC برای:\n🎵 {artist_name} - {track_name}")
+                                file_bytes, filename = download_lossless_flac(track_name, artist_name)
+                                
+                                if file_bytes:
+                                    send_document(
+                                        chat_id, 
+                                        file_bytes, 
+                                        filename, 
+                                        f"🔊 **{artist_name} - {track_name}**\n💎 کیفیت: Lossless FLAC (Original Uncompressed)"
+                                    )
+                                else:
+                                    send_message(chat_id, "❌ فایل FLAC مستقیم در دیتابیس آنلاین پیدا نشد.")
+                            else:
+                                send_message(chat_id, "❌ خواندن لینک اسپاتیفای ناموفق بود.")
+        except Exception as e:
+            time.sleep(2)
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    main()
 
