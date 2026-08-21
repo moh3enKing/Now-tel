@@ -11,7 +11,7 @@ import yt_dlp
 from flask import Flask
 
 # --------------------------------------------------
-# تنظیمات لاگ‌گیری دقیق در ترمینال Render
+# تنظیمات لاگ‌گیری در ترمینال Render
 # --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
@@ -30,7 +30,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Spotify Audio Downloader is ONLINE!"
+    return "Raw Audio Stream Downloader is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -76,19 +76,19 @@ def get_spotify_track_info(spotify_url: str):
     return None, None
 
 # --------------------------------------------------
-# دانلود کامل با بای‌پاس فایروال (موتور اندروید/آیفون)
+# دانلود مستقیم استریم صوتی خام (Raw Audio Stream - بدون تبدیل)
 # --------------------------------------------------
 def download_exact_track(track_name: str, artist_name: str, chat_id: int):
     query = f"{artist_name} - {track_name}"
-    logger.info(f"Searching for exact track: '{query}'")
-    send_message(chat_id, f"🔍 **جستجو و دریافت موزیک اصلی:**\n🎵 `{query}`")
+    logger.info(f"Searching raw audio stream for: '{query}'")
+    send_message(chat_id, f"🔍 **در حال دریافت استریم صوتی خام (بدون هیچ تبدیلی):**\n🎵 `{query}`")
 
     os.makedirs("downloads", exist_ok=True)
     output_template = f"downloads/{artist_name} - {track_name}.%(ext)s"
 
-    # تنظیمات اختصاصی yt-dlp برای دور زدن شناسایی بات روی Render
+    # اولویت دریافت استریم صوتی خام خالص (m4a / opus / webm)
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format': 'bestaudio[ext=m4a]/bestaudio[ext=opus]/bestaudio/best',
         'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
@@ -100,7 +100,6 @@ def download_exact_track(track_name: str, artist_name: str, chat_id: int):
         }
     }
 
-    # کوئری‌های جستجو: ابتدا YouTube با کلاینت اندروید، سپس SoundCloud به عنوان پشتیبان
     search_targets = [
         f"ytsearch5:{artist_name} {track_name} audio",
         f"scsearch5:{artist_name} {track_name}"
@@ -109,7 +108,6 @@ def download_exact_track(track_name: str, artist_name: str, chat_id: int):
     selected_url = None
     artist_clean = artist_name.lower().strip()
 
-    # گام ۱: جستجو و تطبیق نام خواننده
     search_ydl_opts = {
         'quiet': True, 
         'no_warnings': True, 
@@ -139,13 +137,10 @@ def download_exact_track(track_name: str, artist_name: str, chat_id: int):
             except Exception as e:
                 logger.error(f"Search error for {target}: {e}")
 
-    # فال‌بک به اولین نتیجه در صورت عدم مطابقت عنوان
     if not selected_url:
-        logger.info("Fallback: taking first result from ytsearch1...")
         selected_url = f"ytsearch1:{artist_name} {track_name}"
 
-    # گام ۲: انجام دانلود واقعی
-    send_message(chat_id, "📥 **شناسه موزیک تایید شد! در حال دانلود کامل...**")
+    send_message(chat_id, "📥 **استریم صوتی خام دریافت شد! در حال ذخیره فایل بدون هیچ تغییر...**")
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -156,25 +151,16 @@ def download_exact_track(track_name: str, artist_name: str, chat_id: int):
             
             out_file = ydl.prepare_filename(dl_info)
             
-            # برحصور پسوند فایل صوتی خروجی
-            possible_files = [
-                out_file,
-                os.path.splitext(out_file)[0] + ".mp3",
-                os.path.splitext(out_file)[0] + ".m4a",
-                os.path.splitext(out_file)[0] + ".opus",
-                os.path.splitext(out_file)[0] + ".webm"
-            ]
-            
-            final_file = None
-            for pf in possible_files:
-                if os.path.exists(pf) and os.path.getsize(pf) > 1000000:
-                    final_file = pf
-                    break
+            # اصلاح پسوند ظاهری کانتینر mp4 به m4a بدون دست زدن به دیتای فایل
+            if out_file.endswith('.mp4'):
+                new_m4a_path = out_file[:-4] + '.m4a'
+                os.rename(out_file, new_m4a_path)
+                out_file = new_m4a_path
 
-            if final_file:
-                size_mb = round(os.path.getsize(final_file) / (1024 * 1024), 2)
-                logger.info(f"Download completed successfully: {final_file} ({size_mb} MB)")
-                return final_file, size_mb
+            if os.path.exists(out_file) and os.path.getsize(out_file) > 1000000:
+                size_mb = round(os.path.getsize(out_file) / (1024 * 1024), 2)
+                logger.info(f"Raw audio stream saved: {out_file} ({size_mb} MB)")
+                return out_file, size_mb
     except Exception as e:
         logger.error(f"Download execution failed: {e}")
 
@@ -185,7 +171,7 @@ def download_exact_track(track_name: str, artist_name: str, chat_id: int):
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 [Render Fixed Bot] Active and listening...")
+    logger.info("🚀 [Render Raw Audio Bot] Active and listening...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -214,7 +200,7 @@ def start_bot_polling():
                             file_path, size_mb = download_exact_track(track_name, artist_name, chat_id)
 
                             if file_path and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **دانلود موزیک با موفقیت انجام شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل...")
+                                send_message(chat_id, f"⚡️ **فایل صوتی خام بدون تغییر دانلود شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل سند...")
                                 send_document(
                                     chat_id,
                                     file_path,
