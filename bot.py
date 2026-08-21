@@ -29,7 +29,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Spotify HQ Downloader Bot is ONLINE!"
+    return "Spotify Direct Parser Bot is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -73,65 +73,76 @@ def get_spotify_track_info(spotify_url: str):
         logger.error(f"Scrape Error: {e}")
     return None, None
 
+def extract_download_link(text_data):
+    """استخراج لینک‌های مستقیم صوتی از پاسخ‌های متنی و HTML"""
+    urls = re.findall(r'https?://[^\s"\'<>]+', text_data)
+    for u in urls:
+        if any(ext in u.lower() for ext in ['.mp3', '.flac', 'download', 'cdn', 'stream']):
+            return u
+    return urls[0] if urls else None
+
 # --------------------------------------------------
-# موتور اصلی دانلود با Bypass هوشمند
+# دانلود مستقیم هوشمند
 # --------------------------------------------------
-def download_audio_guaranteed(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+def download_audio_smart(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
     query = f"{artist_name} - {track_name}"
-    send_message(chat_id, f"🔍 **استخراج فایل با کیفیت اصلی...**\n🎵 `{query}`")
+    send_message(chat_id, f"🔍 **استخراج مستقیم فایل صوتی...**\n🎵 `{query}`")
 
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
     )
 
-    # لیست موتورهای دریافت مستقیم با هدرهای شبیه‌سازی مرورگر
-    engines = [
+    sources = [
+        # Source 1: SpotiSongDownloader Search
         {
-            "name": "SpotifyDown Direct",
-            "url": "https://api.spotifydown.com/download/" + (re.search(r'track/([a-zA-Z0-9]+)', spotify_url).group(1) if re.search(r'track/([a-zA-Z0-9]+)', spotify_url) else ""),
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Origin": "https://spotifydown.com",
-                "Referer": "https://spotifydown.com/"
-            }
-        },
-        {
-            "name": "SpotiSongDownloader",
+            "name": "SpotiSong Engine",
             "url": f"https://spotisongdownloader.com/api/download-track?q={urllib.parse.quote(query)}",
-            "headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "Referer": "https://spotisongdownloader.com/"
-            }
+            "headers": {"User-Agent": "Mozilla/5.0", "Referer": "https://spotisongdownloader.com/"}
+        },
+        # Source 2: SpotifyMate Direct API
+        {
+            "name": "SpotifyMate Engine",
+            "url": f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(query)}",
+            "headers": {"User-Agent": "Mozilla/5.0", "Referer": "https://spotidownloader.com/"}
         }
     ]
 
-    for eng in engines:
-        if not eng["url"]: continue
-        logger.info(f"Trying Engine: {eng['name']}")
-        send_message(chat_id, f"📡 **تلاش با سرور {eng['name']}...**")
+    for src in sources:
+        logger.info(f"Trying {src['name']}...")
+        send_message(chat_id, f"📡 **در حال پردازش با سرور {src['name']}...**")
 
         try:
-            res = scraper.get(eng["url"], headers=eng["headers"], timeout=20)
-            logger.info(f"{eng['name']} Status: {res.status_code}")
-            
-            if res.status_code == 200:
-                data = res.json()
-                dl_url = data.get("link") or data.get("download_url") or data.get("url")
-                
-                if dl_url:
-                    logger.info(f"Found Direct Link: {dl_url}")
-                    send_message(chat_id, "📥 **لینک فایل دریافت شد! در حال دانلود...**")
+            res = scraper.get(src["url"], headers=src["headers"], timeout=20)
+            logger.info(f"{src['name']} Status Code: {res.status_code}")
 
-                    file_res = scraper.get(dl_url, headers=eng["headers"], timeout=120)
+            if res.status_code == 200:
+                dl_url = None
+                
+                # تست استخراج به صورت JSON
+                try:
+                    data = res.json()
+                    dl_url = data.get("download_url") or data.get("link") or data.get("url")
+                except Exception:
+                    # اگر JSON نبود و HTML بود، لینک رو با Regex می‌کشیم بیرون!
+                    logger.info("Response is HTML/Text, parsing URLs with Regex...")
+                    dl_url = extract_download_link(res.text)
+
+                if dl_url:
+                    logger.info(f"Direct Audio Link Found: {dl_url}")
+                    send_message(chat_id, "📥 **لینک دانلود استخراج شد! در حال دانلود فایل...**")
+
+                    file_res = scraper.get(dl_url, headers=src["headers"], timeout=120)
                     content = file_res.content
                     size_mb = round(len(content) / (1024 * 1024), 2)
-                    logger.info(f"Downloaded Size: {size_mb} MB")
+                    logger.info(f"Downloaded File Size: {size_mb} MB")
 
-                    if len(content) > 1500000: # حداقل ۱.۵ مگابایت
+                    if len(content) > 1500000: # فایل حداقل ۱.۵ مگابایت
                         filename = f"{artist_name} - {track_name}.mp3"
                         return content, filename, size_mb
+                    else:
+                        logger.warning("File too small, trying next source.")
         except Exception as e:
-            logger.error(f"Engine {eng['name']} Exception: {e}")
+            logger.error(f"Error in {src['name']}: {e}")
 
     return None, None, 0
 
@@ -140,7 +151,7 @@ def download_audio_guaranteed(spotify_url: str, track_name: str, artist_name: st
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 Bot is RUNNING with Guaranteed Direct Engine...")
+    logger.info("🚀 Bot is RUNNING with Smart Direct Parser...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -152,7 +163,7 @@ def start_bot_polling():
                         text = update["message"]["text"].strip()
 
                         if text == "/start":
-                            send_message(chat_id, "👋 **سلام!** لینک اسپاتیفای را بفرستید تا فایل اصلی صوتی براتون ارسال بشه:")
+                            send_message(chat_id, "👋 **سلام!** لینک اسپاتیفای را بفرستید تا فایل صوتی کامل تحویل داده شود:")
                             continue
 
                         if "open.spotify.com/track/" in text:
@@ -163,13 +174,13 @@ def start_bot_polling():
                             logger.info(f"Parsed -> Artist: {artist_name}, Track: {track_name}")
 
                             if not track_name:
-                                send_message(chat_id, "❌ استخراج اطلاعات از اسپاتیفای ناموفق بود.")
+                                send_message(chat_id, "❌ استخراج اطلاعات ناموفق بود.")
                                 continue
 
-                            flac_bytes, filename, size_mb = download_audio_guaranteed(text, track_name, artist_name, chat_id)
+                            flac_bytes, filename, size_mb = download_audio_smart(text, track_name, artist_name, chat_id)
 
                             if flac_bytes and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **دانلود کامل شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل سند (Document)...")
+                                send_message(chat_id, f"⚡️ **دانلود با موفقیت انجام شد!**\n📦 **حجم فایل:** `{size_mb} MB`\nدر حال ارسال فایل سندی...")
                                 send_document(
                                     chat_id,
                                     flac_bytes,
