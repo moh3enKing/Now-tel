@@ -29,7 +29,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "FabDL Fixed Lossless Bot is ONLINE!"
+    return "Spotify HQ Downloader Bot is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -74,86 +74,64 @@ def get_spotify_track_info(spotify_url: str):
     return None, None
 
 # --------------------------------------------------
-# دانلود FLAC/HQ با موتور اصلاح‌شده FabDL
+# موتور اصلی دانلود با Bypass هوشمند
 # --------------------------------------------------
-def download_flac_fabdl(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
-    send_message(chat_id, f"🔍 **استخراج از موتور FabDL (با هدرهای اختصاصی)...**\n🎵 `{artist_name} - {track_name}`")
+def download_audio_guaranteed(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+    query = f"{artist_name} - {track_name}"
+    send_message(chat_id, f"🔍 **استخراج فایل با کیفیت اصلی...**\n🎵 `{query}`")
 
-    scraper = cloudscraper.create_scraper()
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+    )
 
-    # هدرهای اصلی برای دور زدن "invalid origin"
-    fabdl_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Origin": "https://fabdl.com",
-        "Referer": "https://fabdl.com/",
-        "Accept": "application/json, text/plain, */*"
-    }
+    # لیست موتورهای دریافت مستقیم با هدرهای شبیه‌سازی مرورگر
+    engines = [
+        {
+            "name": "SpotifyDown Direct",
+            "url": "https://api.spotifydown.com/download/" + (re.search(r'track/([a-zA-Z0-9]+)', spotify_url).group(1) if re.search(r'track/([a-zA-Z0-9]+)', spotify_url) else ""),
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Origin": "https://spotifydown.com",
+                "Referer": "https://spotifydown.com/"
+            }
+        },
+        {
+            "name": "SpotiSongDownloader",
+            "url": f"https://spotisongdownloader.com/api/download-track?q={urllib.parse.quote(query)}",
+            "headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Referer": "https://spotisongdownloader.com/"
+            }
+        }
+    ]
 
-    # گام اول: گرفتن Task GID
-    get_api = f"https://api.fabdl.com/spotify/get?url={urllib.parse.quote(spotify_url)}"
-    logger.info(f"FabDL Step 1: GET {get_api}")
-    send_message(chat_id, "📡 **گام ۱: دریافت شناسه فایل از FabDL...**")
+    for eng in engines:
+        if not eng["url"]: continue
+        logger.info(f"Trying Engine: {eng['name']}")
+        send_message(chat_id, f"📡 **تلاش با سرور {eng['name']}...**")
 
-    try:
-        res = scraper.get(get_api, headers=fabdl_headers, timeout=20)
-        logger.info(f"FabDL Step 1 Status: {res.status_code}")
-        logger.info(f"FabDL Step 1 Response: {res.text[:300]}")
+        try:
+            res = scraper.get(eng["url"], headers=eng["headers"], timeout=20)
+            logger.info(f"{eng['name']} Status: {res.status_code}")
+            
+            if res.status_code == 200:
+                data = res.json()
+                dl_url = data.get("link") or data.get("download_url") or data.get("url")
+                
+                if dl_url:
+                    logger.info(f"Found Direct Link: {dl_url}")
+                    send_message(chat_id, "📥 **لینک فایل دریافت شد! در حال دانلود...**")
 
-        if res.status_code == 200:
-            data = res.json()
-            result = data.get("result", {})
-            gid = result.get("gid")
-            task_id = result.get("id")
+                    file_res = scraper.get(dl_url, headers=eng["headers"], timeout=120)
+                    content = file_res.content
+                    size_mb = round(len(content) / (1024 * 1024), 2)
+                    logger.info(f"Downloaded Size: {size_mb} MB")
 
-            if gid and task_id:
-                # گام دوم: تبدیل و گرفتن لینک دانلود مستقیم
-                convert_api = f"https://api.fabdl.com/spotify/mp3-convert-task/{gid}/{task_id}"
-                logger.info(f"FabDL Step 2: GET {convert_api}")
-                send_message(chat_id, "📥 **گام ۲: دریافت لینک دانلود مستقیم...**")
-
-                # چند ثانیه مکث برای پردازش سرور FabDL
-                time.sleep(2)
-                conv_res = scraper.get(convert_api, headers=fabdl_headers, timeout=25)
-                logger.info(f"FabDL Step 2 Status: {conv_res.status_code}")
-                logger.info(f"FabDL Step 2 Response: {conv_res.text[:300]}")
-
-                if conv_res.status_code == 200:
-                    conv_data = conv_res.json()
-                    dl_path = conv_data.get("result", {}).get("download_url")
-
-                    if dl_path:
-                        full_dl_url = f"https://api.fabdl.com{dl_path}" if dl_path.startswith("/") else dl_path
-                        logger.info(f"Downloading final file from: {full_dl_url}")
-                        send_message(chat_id, "⚡️ **در حال دانلود فایل اصلی...**")
-
-                        file_res = scraper.get(full_dl_url, headers=fabdl_headers, timeout=120)
-                        content = file_res.content
-                        size_mb = round(len(content) / (1024 * 1024), 2)
-                        logger.info(f"Final File Size: {size_mb} MB")
-
-                        if len(content) > 1500000:
-                            filename = f"{artist_name} - {track_name} [HQ].mp3"
-                            return content, filename, size_mb
-    except Exception as e:
-        logger.error(f"FabDL Engine Error: {e}")
-
-    # Fallback به روش جستجوی مستقیم در صورت شکست
-    try:
-        logger.info("--- Trying Backup Engine ---")
-        q = f"{artist_name} {track_name}"
-        search_url = f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(q)}"
-        res = scraper.get(search_url, timeout=20)
-        if res.status_code == 200 and "download_url" in res.text:
-            data = res.json()
-            dl_url = data.get("download_url")
-            if dl_url:
-                file_res = scraper.get(dl_url, timeout=120)
-                content = file_res.content
-                size_mb = round(len(content) / (1024 * 1024), 2)
-                if len(content) > 1500000:
-                    return content, f"{artist_name} - {track_name}.mp3", size_mb
-    except Exception as e:
-        logger.error(f"Backup Engine Error: {e}")
+                    if len(content) > 1500000: # حداقل ۱.۵ مگابایت
+                        filename = f"{artist_name} - {track_name}.mp3"
+                        return content, filename, size_mb
+        except Exception as e:
+            logger.error(f"Engine {eng['name']} Exception: {e}")
 
     return None, None, 0
 
@@ -162,7 +140,7 @@ def download_flac_fabdl(spotify_url: str, track_name: str, artist_name: str, cha
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 Bot is RUNNING with Fixed FabDL Origin Headers...")
+    logger.info("🚀 Bot is RUNNING with Guaranteed Direct Engine...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -174,7 +152,7 @@ def start_bot_polling():
                         text = update["message"]["text"].strip()
 
                         if text == "/start":
-                            send_message(chat_id, "💎 **ربات دانلود موزیک اسپاتیفای (FabDL Engine)**\n\nلینک اسپاتیفای را بفرستید:")
+                            send_message(chat_id, "👋 **سلام!** لینک اسپاتیفای را بفرستید تا فایل اصلی صوتی براتون ارسال بشه:")
                             continue
 
                         if "open.spotify.com/track/" in text:
@@ -185,13 +163,13 @@ def start_bot_polling():
                             logger.info(f"Parsed -> Artist: {artist_name}, Track: {track_name}")
 
                             if not track_name:
-                                send_message(chat_id, "❌ استخراج اطلاعات ناموفق بود.")
+                                send_message(chat_id, "❌ استخراج اطلاعات از اسپاتیفای ناموفق بود.")
                                 continue
 
-                            flac_bytes, filename, size_mb = download_flac_fabdl(text, track_name, artist_name, chat_id)
+                            flac_bytes, filename, size_mb = download_audio_guaranteed(text, track_name, artist_name, chat_id)
 
                             if flac_bytes and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **دانلود کامل شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال آپلود فایل سند به تلگرام...")
+                                send_message(chat_id, f"⚡️ **دانلود کامل شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل سند (Document)...")
                                 send_document(
                                     chat_id,
                                     flac_bytes,
@@ -199,7 +177,7 @@ def start_bot_polling():
                                     f"🎼 **{artist_name} - {track_name}**\n📦 **حجم:** `{size_mb} MB`"
                                 )
                             else:
-                                send_message(chat_id, "❌ متأسفانه دریافت فایل با خطا مواجه شد. لاگ ترمینال را بررسی کنید.")
+                                send_message(chat_id, "❌ خطایی در استخراج فایل صوتی رخ داد.")
         except Exception as e:
             logger.error(f"Polling Error: {e}")
             time.sleep(2)
