@@ -5,6 +5,7 @@ import time
 import logging
 import urllib.parse
 import threading
+import requests  # <--- این خط جا مونده بود!
 import cloudscraper
 from flask import Flask
 
@@ -90,7 +91,7 @@ def download_flac_bypassed(spotify_url: str, track_name: str, artist_name: str, 
     )
 
     endpoints = [
-        # Engine 1: FabDL (معمولاً FLAC میده)
+        # Engine 1: FabDL 
         f"https://api.fabdl.com/spotify/get?url={urllib.parse.quote(spotify_url)}",
         # Engine 2: SpotiDownloader
         f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(query)}"
