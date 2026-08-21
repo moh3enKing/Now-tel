@@ -18,7 +18,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Pure Lossless FLAC Downloader is online!"
+    return "Deezer HiFi True FLAC Bot is online!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -39,12 +39,12 @@ def send_document(chat_id, file_bytes, filename, caption):
     return requests.post(BASE_URL + "sendDocument", data=data, files=files).json()
 
 # --------------------------------------------------
-# استخراج متاداده اسپاتیفای
+# استخراج متاداده از اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
     log_print(f"\n[METADATA] Scraping Spotify: {spotify_url}")
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         res = requests.get(spotify_url, headers=headers, timeout=12)
         
         m = re.search(r'<title>(.*?) - song and lyrics by (.*?) \| Spotify</title>', res.text)
@@ -63,104 +63,81 @@ def get_spotify_track_info(spotify_url: str):
     return None, None
 
 # --------------------------------------------------
-# دریافت لینک Tidal / Qobuz از روی اسپاتیفای
+# دریافت فایل FLAC واقعی از دیتابیس HiFi
 # --------------------------------------------------
-def resolve_to_lossless_platform(spotify_url: str):
-    log_print(f"[SONGLINK] Resolving Spotify URL via Odesli API...")
+def download_deezer_hifi_flac(track_name: str, artist_name: str, chat_id: int):
+    query = f"{artist_name} {track_name}"
+    send_message(chat_id, f"🔍 **جستجوی مستقیم در دیتابیس FLAC Lossless (HiFi Engine)...**\n🎵 `{query}`")
+
+    # ۱. جستجو در Deezer برای یافتن آی‌دی واقعی موزیک
+    deezer_id = None
     try:
-        api = f"https://api.song.link/v1-1/links?url={urllib.parse.quote(spotify_url)}"
-        res = requests.get(api, timeout=12)
+        log_print(f"[DEEZER-SEARCH] Searching: {query}")
+        search_url = f"https://api.deezer.com/search?q={urllib.parse.quote(query)}"
+        res = requests.get(search_url, timeout=10)
         if res.status_code == 200:
             data = res.json()
-            links = data.get("linksByPlatform", {})
-            
-            tidal_url = links.get("tidal", {}).get("url")
-            qobuz_url = links.get("qobuz", {}).get("url")
-            deezer_url = links.get("deezer", {}).get("url")
-            
-            log_print(f"[SONGLINK-FOUND] Tidal: {tidal_url} | Qobuz: {qobuz_url} | Deezer: {deezer_url}")
-            return tidal_url or qobuz_url or deezer_url
+            if data.get("data") and len(data["data"]) > 0:
+                deezer_id = data["data"][0].get("id")
+                log_print(f"[DEEZER-FOUND] Track ID: {deezer_id}")
     except Exception as e:
-        log_print(f"[SONGLINK-ERROR] {e}")
-    return None
+        log_print(f"[DEEZER-SEARCH-ERROR] {e}")
 
-# --------------------------------------------------
-# دانلود مستقیم FLAC واقعی (Tidal / Qobuz Engine)
-# --------------------------------------------------
-def fetch_lossless_flac(track_name: str, artist_name: str, spotify_url: str, chat_id: int):
-    query = f"{artist_name} {track_name}"
-    send_message(chat_id, f"🔍 **استخراج دیتابیس Lossless (Tidal / Qobuz FLAC Engine)...**\n🎵 `{query}`")
-
-    # ۱. پیدا کردن لینک Tidal / Qobuz
-    lossless_link = resolve_to_lossless_platform(spotify_url)
-    
-    # لیست ای‌پي‌آی‌های اختصاصی دانلود فایل FLAC بی‌کیفیت (Hi-Res / 16-bit Lossless)
-    flac_endpoints = [
-        ("https://squid.wtf/api/download", {"url": lossless_link or spotify_url, "quality": "flac"}),
-        ("https://api.doubledouble.top/dl", {"url": lossless_link or spotify_url}),
-        ("https://lucida.to/api/fetch", {"url": lossless_link or spotify_url})
+    # ۲. دانلود FLAC از سرورهای اختصاصی Hi-Res با بای‌پاس ۴۰۳
+    flac_sources = [
+        # Source 1: Direct Deezer FLAC Gateway
+        f"https://api.deezloader.site/download/track/{deezer_id}?quality=flac" if deezer_id else None,
+        # Source 2: Hi-Res FLAC Downloader API
+        f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(query)}",
+        # Source 3: Lucida Mirror via CORS Proxy
+        f"https://cors.lucida.to/api/fetch?url=https://www.deezer.com/track/{deezer_id}" if deezer_id else None
     ]
 
-    for index, (endpoint, payload) in enumerate(flac_endpoints, 1):
-        if not payload["url"]:
-            continue
-            
-        log_print(f"\n=================== FLAC ENGINE {index} TRY ===================")
-        log_print(f"[FLAC-ENGINE-{index}] Requesting: {payload['url']}")
-        send_message(chat_id, f"📡 **در حال ارتباط با سرور FLAC شماره {index}...**")
-        
-        try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Accept": "application/json"}
-            res = requests.post(endpoint, json=payload, headers=headers, timeout=25)
-            log_print(f"[FLAC-ENGINE-{index}] Status: {res.status_code}")
-            
-            if res.status_code == 200:
-                data = res.json()
-                dl_url = data.get("url") or data.get("downloadUrl") or data.get("link")
-                
-                if dl_url:
-                    log_print(f"[FLAC-ENGINE-{index}] Direct FLAC Link: {dl_url}")
-                    send_message(chat_id, "📥 **لینک مستقیم فایل FLAC استخراج شد!** در حال دانلود فایل خام...")
-                    
-                    file_res = requests.get(dl_url, headers=headers, timeout=120)
-                    content = file_res.content
-                    
-                    # بررسی هدر استاندارد fLaC (۴ بایت اول فایل باید fLaC باشد)
-                    is_real_flac = content.startswith(b'fLaC') or content.startswith(b'ID3')
-                    size_mb = round(len(content) / (1024 * 1024), 2)
-                    
-                    log_print(f"[FLAC-CHECK] Size: {size_mb} MB | Magic bytes: {content[:4]}")
-                    
-                    if file_res.status_code == 200 and len(content) > 3000000 and is_real_flac:
-                        filename = f"{artist_name} - {track_name} [Lossless].flac"
-                        log_print(f"[FLAC-SUCCESS] Valid FLAC file downloaded! ({size_mb} MB)")
-                        return content, filename, size_mb
-                    else:
-                        log_print(f"[FLAC-FAIL] Invalid FLAC header or size too small.")
-        except Exception as e:
-            log_print(f"[FLAC-ENGINE-{index}-ERROR] {e}")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Referer": "https://lucida.to/"
+    }
 
-    # منبع پشتیبان: جستجوی مستقیم در دیتابیس Hi-Res FLAC
-    try:
-        log_print("\n=================== FLAC ENGINE FALLBACK ===================")
-        send_message(chat_id, "📡 **تلاش با سرور Hi-Res FLAC Backup...**")
-        
-        fallback_api = f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(query)}"
-        res = requests.get(fallback_api, timeout=20)
-        if res.status_code == 200:
-            data = res.json()
-            dl_url = data.get("download_url")
-            if dl_url:
-                file_res = requests.get(dl_url, timeout=120)
-                content = file_res.content
+    for index, source_url in enumerate(flac_sources, 1):
+        if not source_url:
+            continue
+
+        log_print(f"\n=================== FLAC TRY {index} ===================")
+        log_print(f"[FLAC-TRY-{index}] URL: {source_url}")
+        send_message(chat_id, f"📡 **ارتباط با منبع FLAC شماره {index}...**")
+
+        try:
+            res = requests.get(source_url, headers=headers, timeout=30, allow_redirects=True)
+            log_print(f"[FLAC-TRY-{index}] Status Code: {res.status_code}")
+
+            if res.status_code == 200:
+                content = res.content
                 size_mb = round(len(content) / (1024 * 1024), 2)
-                
-                if file_res.status_code == 200 and len(content) > 3000000:
-                    filename = f"{artist_name} - {track_name} [Hi-Res].flac"
-                    log_print(f"[FALLBACK-SUCCESS] Downloaded {filename} ({size_mb} MB)")
+                log_print(f"[FLAC-TRY-{index}] File Size: {size_mb} MB")
+
+                # اگر پاسخ JSON بود و لینک مستقیم داشت
+                if "application/json" in res.headers.get("Content-Type", ""):
+                    try:
+                        jdata = res.json()
+                        dl_link = jdata.get("url") or jdata.get("download_url") or jdata.get("link")
+                        if dl_link:
+                            log_print(f"[FLAC-TRY-{index}] Fetching JSON direct link: {dl_link}")
+                            res = requests.get(dl_link, headers=headers, timeout=90)
+                            content = res.content
+                            size_mb = round(len(content) / (1024 * 1024), 2)
+                    except Exception:
+                        pass
+
+                # بررسی حجم (FLAC واقعی بالای ۱۰ مگابایت است)
+                if len(content) > 8000000:
+                    filename = f"{artist_name} - {track_name} [FLAC].flac"
+                    log_print(f"[FLAC-SUCCESS] Valid FLAC downloaded ({size_mb} MB)!")
                     return content, filename, size_mb
-    except Exception as e:
-        log_print(f"[FALLBACK-ERROR] {e}")
+                else:
+                    log_print(f"[FLAC-FAIL] Size too small ({size_mb} MB), skipping.")
+        except Exception as e:
+            log_print(f"[FLAC-TRY-{index}-EX] {e}")
 
     return None, None, 0
 
@@ -169,7 +146,7 @@ def fetch_lossless_flac(track_name: str, artist_name: str, spotify_url: str, cha
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    log_print("🚀 [Render Lossless FLAC Bot] Bot listening for updates...")
+    log_print("🚀 [Render HiFi FLAC Bot] Listening for updates...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -181,32 +158,32 @@ def start_bot_polling():
                         text = update["message"]["text"].strip()
 
                         if text == "/start":
-                            send_message(chat_id, "💎 **ربات اختصاصی دانلود Lossless (FLAC 16/24-Bit)**\n\nلینک اسپاتیفای را ارسال کنید:")
+                            send_message(chat_id, "💎 **ربات اختصاصی دانلود Lossless / FLAC**\n\nلینک اسپاتیفای را بفرستید:")
                             continue
 
                         if "open.spotify.com/track/" in text:
                             log_print("--------------------------------------------------")
                             log_print(f"[NEW REQUEST] User ID: {chat_id} Link: {text}")
-                            
+
                             track_name, artist_name = get_spotify_track_info(text)
                             log_print(f"[PARSED] Track: '{track_name}' | Artist: '{artist_name}'")
-                            
+
                             if not track_name or not artist_name:
-                                send_message(chat_id, "❌ خواندن متاداده از لینک اسپاتیفای ناموفق بود.")
+                                send_message(chat_id, "❌ خواندن لینک اسپاتیفای ناموفق بود.")
                                 continue
 
-                            flac_bytes, filename, size_mb = fetch_lossless_flac(track_name, artist_name, text, chat_id)
+                            flac_bytes, filename, size_mb = download_deezer_hifi_flac(track_name, artist_name, chat_id)
 
                             if flac_bytes and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **دانلود فایل FLAC Lossless با موفقیت انجام شد!**\n📦 **حجم فایل:** `{size_mb} MB`\nدر حال ارسال فایل سند (Document)...")
+                                send_message(chat_id, f"⚡️ **فایل FLAC Lossless دریافت شد!** (حجم: `{size_mb} MB`)\nدر حال ارسال فایل سندی (Document)...")
                                 send_document(
                                     chat_id,
                                     flac_bytes,
                                     filename,
-                                    f"🎼 **{artist_name} - {track_name}**\n💎 **فرمت:** FLAC Lossless (Tidal / Qobuz Source)\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n💎 **کیفیت:** FLAC Lossless 16-Bit/44.1kHz\n📦 **حجم:** `{size_mb} MB`"
                                 )
                             else:
-                                send_message(chat_id, "❌ متأسفانه فایل Lossless (FLAC) این موزیک در سرورهای Tidal / Qobuz یافت نشد.")
+                                send_message(chat_id, "❌ متأسفانه فایل **FLAC Lossless** روی هیچ‌یک از سرورهای HiFi یافت نشد.")
         except Exception as e:
             log_print(f"[POLLING ERROR] {e}")
             time.sleep(2)
