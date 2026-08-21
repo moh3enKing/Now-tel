@@ -10,10 +10,16 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import yt_dlp
 from difflib import SequenceMatcher
 
-BOT_TOKEN = "8135900333:AAEaS4xeHm9rQ_m1n8ANUC16DkI0-YttPfk"
-
+# تنظیمات لاگ - مهم: برای مخفی کردن توکن در لاگ‌ها
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.getLogger('httpx').setLevel(logging.WARNING)  # خاموش کردن لاگ‌های HTTP که حاوی توکن هستند
+logging.getLogger('telegram.vendor.ptb_urllib3.urllib3').setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# توکن از متغیر محیطی (در Render تنظیم کنید)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN را در محیط تنظیم کنید!")
 
 def extract_track_id(link: str):
     match = re.search(r'/track/([a-zA-Z0-9]+)', link)
@@ -39,7 +45,6 @@ def similarity(a, b):
     return SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 def filter_best_result(entries, title, artist, max_results=5):
-    """انتخاب بهترین نتیجه بر اساس تطابق عنوان و هنرمند"""
     best_score = 0
     best_entry = None
     for entry in entries[:max_results]:
@@ -49,9 +54,9 @@ def filter_best_result(entries, title, artist, max_results=5):
         if score > best_score:
             best_score = score
             best_entry = entry
-    if best_score > 0.5:  # آستانه قبول
+    if best_score > 0.5:
         return best_entry
-    return entries[0]  # اگر هیچ‌کدام خوب نبود، اولی
+    return entries[0]
 
 def search_soundcloud(query: str, tmpdir: str, title: str, artist: str):
     ydl_opts = {
@@ -61,7 +66,8 @@ def search_soundcloud(query: str, tmpdir: str, title: str, artist: str):
         'no_warnings': True,
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'flac', 'preferredquality': '0'}],
         'extractor_args': {'soundcloud': {'client_id': 'Web'}},
-        'match_filter': lambda info: info.get('duration', 0) > 60 and info.get('duration', 0) < 600
+        # فیلتر مدت زمان - باید None بده برای قبول، یا متن خطا
+        'match_filter': lambda info: None if (info.get('duration', 0) > 60 and info.get('duration', 0) < 600) else 'Duration out of range'
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -81,12 +87,13 @@ def search_youtube(query: str, tmpdir: str, title: str, artist: str):
         'quiet': True,
         'no_warnings': True,
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'flac', 'preferredquality': '0'}],
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        'match_filter': lambda info: info.get('duration', 0) > 120 and info.get('duration', 0) < 600
+        # امتحان کلاینت‌های مختلف برای دور زدن مسدودی
+        'extractor_args': {'youtube': {'player_client': ['android', 'web', 'ios', 'tv']}},
+        'match_filter': lambda info: None if (info.get('duration', 0) > 120 and info.get('duration', 0) < 600) else 'Duration out of range'
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            search = ydl.extract_info(f"ytsearch5:{query}", download=False)
+            search = ydl.extract_info(f"ytsearch5:{query} audio", download=False)
             if 'entries' in search and search['entries']:
                 best_entry = filter_best_result(search['entries'], title, artist)
                 ydl.download([best_entry['webpage_url']])
@@ -139,7 +146,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_spotify_link))
     logger.info("ربات شروع به کار کرد...")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
