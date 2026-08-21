@@ -10,7 +10,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import yt_dlp
 from difflib import SequenceMatcher
 
-BOT_TOKEN = "8135900333:AAEaqN-IyOANOGpqwIGqernMM_0piAjefXA"
+BOT_TOKEN = "8135900333:AAEaS4xeHm9rQ_m1n8ANUC16DkI0-YttPfk"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
