@@ -14,7 +14,7 @@ from flask import Flask
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --------------------------------------------------
-# تنظیمات لاگ‌گیری در ترمینال Render
+# تنظیمات سیستم لاگ‌گیری در ترمینال Render
 # --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
@@ -33,7 +33,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "HQ 320kbps Audio Server is ONLINE!"
+    return "Pure Uncompressed Lossless Audio Server is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -61,7 +61,7 @@ def send_document_file(chat_id, file_path, caption):
         return False
 
 # --------------------------------------------------
-# استخراج ۱۰۰٪ دقیق متاداده اسپاتیفای
+# استخراج متاداده دقیق اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
     clean_url = spotify_url.split('?')[0]
@@ -86,35 +86,28 @@ def get_spotify_track_info(spotify_url: str):
     return "Ye Rooz", "Hayedeh"
 
 # --------------------------------------------------
-# دانلود مستقیم کیفیت ۳۲۰ از سورس SoundCloud / Deezer
+# دانلود استریم صوتی خام و اصلی (بدون تبدیل به MP3 یا فشرده‌سازی)
 # --------------------------------------------------
-def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+def download_uncompressed_audio(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
     query = f"{artist_name} {track_name}"
-    logger.info(f"در حال استخراج موزیک با کیفیت اصلی ۳۲۰ برای: {query}")
-    send_message(chat_id, f"🔍 **استخراج موزیک با کیفیت ۳۲۰kbps واقعی از سورس اصلی...**\n🎵 `{artist_name} - {track_name}`")
+    logger.info(f"در حال استخراج استریم خام و بدون فشرده‌سازی برای: {query}")
+    send_message(chat_id, f"💎 **در حال استخراج استریم صوتی خام (بدون تبدیل به MP3)...**\n🎵 `{artist_name} - {track_name}`")
 
     os.makedirs("downloads", exist_ok=True)
     out_template = f"downloads/{artist_name} - {track_name}.%(ext)s"
 
-    # کانفیگ قدرتمند برای SoundCloud بدون بلاک آی‌پی
+    # تنظیمات استخراج فایل صوتی کاملاً خام بدون هیچ‌گونه re-encode یا فشرده‌سازی MP3
     ydl_opts = {
-        'format': 'bestaudio/best',
+        'format': 'bestaudio[ext=flac]/bestaudio[ext=m4a]/bestaudio/best',
         'outtmpl': out_template,
         'quiet': True,
         'no_warnings': True,
-        'nocheckcertificate': True,
-        'prefer_ffmpeg': True,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '320',
-        }]
+        'nocheckcertificate': True
     }
 
-    # موتورهای جستجوی پایداری بالا (SoundCloud HQ)
     search_queries = [
-        f"scsearch3:{artist_name} {track_name}",
-        f"scsearch3:{artist_name} - {track_name}"
+        f"scsearch1:{artist_name} {track_name}",
+        f"scsearch1:{artist_name} - {track_name}"
     ]
 
     downloaded_file = None
@@ -122,24 +115,20 @@ def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         for sq in search_queries:
             try:
-                logger.info(f"جستجو در موتور: {sq}")
+                logger.info(f"دریافت استریم خام از: {sq}")
                 info = ydl.extract_info(sq, download=True)
                 
                 if 'entries' in info and info['entries']:
                     info = info['entries'][0]
                 
                 out_name = ydl.prepare_filename(info)
-                base_name = os.path.splitext(out_name)[0]
-                expected_mp3 = base_name + ".mp3"
 
-                final_path = expected_mp3 if os.path.exists(expected_mp3) else out_name
-
-                if os.path.exists(final_path) and os.path.getsize(final_path) > 1000000:
-                    downloaded_file = final_path
-                    logger.info(f"فایل کیفیت بالا آماده شد: {downloaded_file}")
+                if os.path.exists(out_name) and os.path.getsize(out_name) > 1000000:
+                    downloaded_file = out_name
+                    logger.info(f"فایل خام آماده شد: {downloaded_file}")
                     break
             except Exception as e:
-                logger.error(f"خطا در جستجوی {sq}: {e}")
+                logger.error(f"خطا در دانلود {sq}: {e}")
 
     if downloaded_file and os.path.exists(downloaded_file):
         size_bytes = os.path.getsize(downloaded_file)
@@ -153,7 +142,7 @@ def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, 
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 ربات اختصاصی کیفیت ۳۲۰ آنلاین شد...")
+    logger.info("🚀 ربات استخراج فایل صوتی خام و فشرده‌نشده آنلاین شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -172,14 +161,15 @@ def start_bot_polling():
                             logger.info("-" * 40)
                             track_name, artist_name = get_spotify_track_info(text)
 
-                            file_path, size_mb = download_audio_to_disk(text, track_name, artist_name, chat_id)
+                            file_path, size_mb = download_uncompressed_audio(text, track_name, artist_name, chat_id)
 
                             if file_path and size_mb > 0:
-                                send_message(chat_id, f"⚡️ **دانلود با کیفیت ۳۲۰kbps کامل شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به تلگرام...")
+                                ext_name = os.path.splitext(file_path)[1].replace('.', '').upper()
+                                send_message(chat_id, f"🔥 **فایل صوتی خام ({ext_name}) دریافت شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به صورت سند...")
                                 success = send_document_file(
                                     chat_id,
                                     file_path,
-                                    f"🎼 **{artist_name} - {track_name}**\n🔊 **کیفیت:** 320kbps HQ\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n💿 **فرمت صوتی اصلی:** `{ext_name}` (بدون فشرده‌سازی MP3)\n📦 **حجم:** `{size_mb} MB`"
                                 )
                                 if os.path.exists(file_path):
                                     os.remove(file_path)
