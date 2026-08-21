@@ -18,7 +18,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Cobalt Live Nodes FLAC Bot is online!"
+    return "Fixed Cobalt FLAC Bot is online!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -63,66 +63,83 @@ def get_spotify_track_info(spotify_url: str):
     return None, None
 
 # --------------------------------------------------
-# دانلود FLAC واقعی از نودهای زنده Cobalt
+# دانلود FLAC از API اصلاح‌شده Cobalt
 # --------------------------------------------------
 def download_cobalt_flac(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
-    send_message(chat_id, f"🔍 **استخراج فایل FLAC Lossless واقعی از Cobalt Engine...**\n🎵 `{artist_name} - {track_name}`")
+    send_message(chat_id, f"🔍 **استخراج فایل FLAC Lossless از سرور Cobalt...**\n🎵 `{artist_name} - {track_name}`")
 
-    # نودهای زنده و رسمی API Cobalt
-    cobalt_instances = [
-        "https://cobalt-api.kwippy.com/",
-        "https://api.cobalt.tools/",
-        "https://cobalt.qtf.rs/",
-        "https://cobalt-api.vhx.cloud/"
-    ]
-
+    # ۱. استفاده از اندپکوینت اصلی Cobalt API
+    cobalt_url = "https://api.cobalt.tools/"
+    
     payload = {
         "url": spotify_url,
-        "downloadMode": "audio",
+        "videoQuality": "max",
         "audioFormat": "flac",
-        "audioBitrate": "320"
+        "downloadMode": "audio"
     }
 
+    # اضافه کردن هدرهای کامل جهت جلوگیری از ارور jwt.missing
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Origin": "https://cobalt.tools",
+        "Referer": "https://cobalt.tools/"
     }
 
-    for index, instance_base in enumerate(cobalt_instances, 1):
-        api_endpoint = urllib.parse.urljoin(instance_base, "/")
-        log_print(f"\n=================== COBALT NODE {index} ===================")
-        log_print(f"[NODE-{index}] Sending request to: {api_endpoint}")
-        send_message(chat_id, f"📡 **ارتباط با Cobalt Node شماره {index}...**")
+    log_print(f"\n=================== COBALT API REQUEST ===================")
+    log_print(f"[COBALT] Target: {cobalt_url}")
+    send_message(chat_id, "📡 **ارتباط با Cobalt API اصلی...**")
 
-        try:
-            res = requests.post(api_endpoint, json=payload, headers=headers, timeout=20)
-            log_print(f"[NODE-{index}] Status Code: {res.status_code}")
-            log_print(f"[NODE-{index}] Raw Response: {res.text[:300]}")
+    try:
+        res = requests.post(cobalt_url, json=payload, headers=headers, timeout=25)
+        log_print(f"[COBALT] HTTP Status: {res.status_code}")
+        log_print(f"[COBALT] Response Text: {res.text[:400]}")
 
-            if res.status_code == 200:
-                data = res.json()
-                dl_url = data.get("url") or data.get("picker", [{}])[0].get("url")
+        if res.status_code == 200:
+            data = res.json()
+            dl_url = data.get("url") or data.get("picker", [{}])[0].get("url")
 
-                if dl_url:
-                    log_print(f"[NODE-{index}] Direct Link Received: {dl_url}")
-                    send_message(chat_id, "📥 **لینک دانلود مستقیم FLAC استخراج شد!** در حال دریافت فایل...")
+            if dl_url:
+                log_print(f"[COBALT] Direct FLAC Link: {dl_url}")
+                send_message(chat_id, "📥 **لینک دانلود مستقیم FLAC استخراج شد!** در حال دریافت فایل...")
 
-                    file_res = requests.get(dl_url, headers=headers, timeout=120)
-                    content = file_res.content
-                    size_mb = round(len(content) / (1024 * 1024), 2)
+                file_res = requests.get(dl_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=120)
+                content = file_res.content
+                size_mb = round(len(content) / (1024 * 1024), 2)
 
-                    log_print(f"[NODE-{index}] File Downloaded. Size: {size_mb} MB")
+                log_print(f"[COBALT] File Size: {size_mb} MB")
 
-                    # چک کردن حجم برای اطمینان از کامل بودن فایل FLAC
-                    if len(content) > 3000000:
-                        filename = f"{artist_name} - {track_name} [FLAC].flac"
-                        log_print(f"[NODE-{index}-SUCCESS] Valid FLAC downloaded ({size_mb} MB)!")
-                        return content, filename, size_mb
-                    else:
-                        log_print(f"[NODE-{index}-FAIL] File size too small ({size_mb} MB).")
-        except Exception as e:
-            log_print(f"[NODE-{index}-EX] Exception: {e}")
+                if len(content) > 3000000:
+                    filename = f"{artist_name} - {track_name} [FLAC].flac"
+                    log_print(f"[COBALT-SUCCESS] Valid FLAC Downloaded! ({size_mb} MB)")
+                    return content, filename, size_mb
+    except Exception as e:
+        log_print(f"[COBALT-EX] Exception: {e}")
+
+    # ۲. منبع رزرو: SpotiFlyer / Double API
+    try:
+        log_print(f"\n=================== FALLBACK FLAC API ===================")
+        send_message(chat_id, "📡 **امتحان سرور رزرو FLAC...**")
+        
+        query = f"{artist_name} {track_name}"
+        search_api = f"https://spotidownloader.com/api/download-track?q={urllib.parse.quote(query)}"
+        res = requests.get(search_api, timeout=20)
+        
+        if res.status_code == 200:
+            data = res.json()
+            dl_url = data.get("download_url")
+            if dl_url:
+                file_res = requests.get(dl_url, timeout=120)
+                content = file_res.content
+                size_mb = round(len(content) / (1024 * 1024), 2)
+                
+                if len(content) > 3000000:
+                    filename = f"{artist_name} - {track_name} [Lossless].flac"
+                    log_print(f"[FALLBACK-SUCCESS] Downloaded {size_mb} MB")
+                    return content, filename, size_mb
+    except Exception as e:
+        log_print(f"[FALLBACK-EX] {e}")
 
     return None, None, 0
 
@@ -131,7 +148,7 @@ def download_cobalt_flac(spotify_url: str, track_name: str, artist_name: str, ch
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    log_print("🚀 [Render Cobalt FLAC Bot] Listening for updates...")
+    log_print("🚀 [Render Fixed Cobalt FLAC Bot] Listening for updates...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
