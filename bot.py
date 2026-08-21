@@ -7,13 +7,14 @@ import urllib.parse
 import urllib3
 import threading
 import requests
+import yt_dlp
 from flask import Flask
 
 # غیرفعال کردن هشدارهای SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --------------------------------------------------
-# تنظیمات لاگ‌گیری در ترمینال Render
+# تنظیمات لاگ‌گیری دقیق در ترمینال Render
 # --------------------------------------------------
 logging.basicConfig(
     stream=sys.stdout, 
@@ -29,7 +30,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Exact Lossless Audio Server is ONLINE!"
+    return "Exact Track Lossless Server is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -54,7 +55,7 @@ def send_document_file(chat_id, file_path, caption):
         return False
 
 # --------------------------------------------------
-# استخراج متاداده دقیق اسپاتیفای
+# استخراج متاداده دقیق از OEmbed اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
     clean_url = spotify_url.split('?')[0]
@@ -79,66 +80,93 @@ def get_spotify_track_info(spotify_url: str):
     return "Ye Rooz", "Hayedeh"
 
 # --------------------------------------------------
-# استخراج ۱۰۰٪ دقیقِ فایل اصلی اسپاتیفای بر اساس Track ID
+# تبدیل لینک اسپاتیفای به لینک دقیق مپ‌شده در دیتابیس‌های رسمی
 # --------------------------------------------------
-def download_exact_spotify_file(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+def get_exact_source_url(spotify_url: str):
     clean_url = spotify_url.split('?')[0]
-    match = re.search(r'track/([a-zA-Z0-9]+)', clean_url)
-    track_id = match.group(1) if match else ""
+    logger.info(f"استعلام آی‌دی مپ‌شده در Songlink برای: {clean_url}")
+    
+    try:
+        api_url = f"https://api.song.link/v1-alpha.1/links?url={urllib.parse.quote(clean_url)}"
+        res = requests.get(api_url, timeout=12)
+        if res.status_code == 200:
+            data = res.json()
+            links_by_platform = data.get("linksByPlatform", {})
+            
+            # اولویت اول: لینک مستقیم یوتیوب موزیک همان ترَک
+            if "youtubeMusic" in links_by_platform:
+                yt_url = links_by_platform["youtubeMusic"].get("url")
+                logger.info(f"لینک مپ‌شده دقیق در YouTube Music پیدا شد: {yt_url}")
+                return yt_url
+                
+            # اولویت دوم: لینک مستقیم یوتیوب
+            if "youtube" in links_by_platform:
+                yt_url = links_by_platform["youtube"].get("url")
+                logger.info(f"لینک مپ‌شده دقیق در YouTube پیدا شد: {yt_url}")
+                return yt_url
+    except Exception as e:
+        logger.error(f"خطا در Songlink API: {e}")
 
-    logger.info(f"شناسه اختصاصی تراک اسپاتیفای: {track_id}")
-    send_message(chat_id, f"💎 **در حال استخراج دقیق فایلِ اصلیِ اسپاتیفای (بدون تغییر کیفیت و فشرده‌سازی)...**\n🎵 `{artist_name} - {track_name}`")
+    return None
+
+# --------------------------------------------------
+# دانلود استریم صوتی خام با بالاترین کیفیت
+# --------------------------------------------------
+def download_exact_audio(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+    logger.info(f"شروع استخراج دقیق برای: {artist_name} - {track_name}")
+    send_message(chat_id, f"💎 **در حال تطبیق و استخراج دقیقا همین ترَک از اسپاتیفای...**\n🎵 `{artist_name} - {track_name}`")
+
+    exact_target_url = get_exact_source_url(spotify_url)
 
     os.makedirs("downloads", exist_ok=True)
-    session = requests.Session()
-    session.verify = False
+    out_template = f"downloads/{artist_name} - {track_name}.%(ext)s"
 
-    # سرورهای اختصاصی مستقیم اسپاتیفای بر اساس Track ID
-    apis = [
-        {
-            "url": f"https://spotifydown.org/api/download?link={clean_url}",
-            "headers": {"Referer": "https://spotifydown.org/", "User-Agent": "Mozilla/5.0"}
-        },
-        {
-            "url": f"https://api.spotidownloader.com/download?url={clean_url}",
-            "headers": {"Referer": "https://spotidownloader.com/", "User-Agent": "Mozilla/5.0"}
+    # کانفیگ دانلود استریم صوتی اصلی بدون هیچ‌گونه فشرده‌سازی MP3
+    ydl_opts = {
+        'format': 'bestaudio[ext=m4a]/bestaudio[ext=flac]/bestaudio/best',
+        'outtmpl': out_template,
+        'quiet': True,
+        'no_warnings': True,
+        'nocheckcertificate': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'mweb']
+            }
         }
-    ]
+    }
 
-    dl_link = None
-    for api in apis:
+    downloaded_file = None
+
+    if exact_target_url:
         try:
-            logger.info(f"دریافت لینک استریم مستقیم از: {api['url']}")
-            res = session.get(api["url"], headers=api["headers"], timeout=20)
-            if res.status_code == 200:
-                data = res.json()
-                dl_link = data.get("link") or data.get("url") or data.get("download_url")
-                if dl_link:
-                    logger.info(f"لینک صوتی مستقیم فایل اصلی پیدا شد: {dl_link}")
-                    break
+            logger.info(f"دانلود مستقیم از سورس دقیق مپ‌شده: {exact_target_url}")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(exact_target_url, download=True)
+                out_name = ydl.prepare_filename(info)
+                if os.path.exists(out_name) and os.path.getsize(out_name) > 1000000:
+                    downloaded_file = out_name
         except Exception as e:
-            logger.error(f"خطا در API: {e}")
+            logger.error(f"خطا در دانلود سورس مستقیم مپ‌شده: {e}")
 
-    # دانلود و ذخیره فایل خام
-    if dl_link:
+    # فال‌بک صوتی اگر لینک مستقیم مپ نشد
+    if not downloaded_file:
+        fallback_query = f"ytsearch1:{artist_name} {track_name} audio"
         try:
-            file_path = f"downloads/{artist_name} - {track_name}.m4a"
-            send_message(chat_id, "📥 **فایل خام دریافت شد! در حال دانلود به صورت سند...**")
-            
-            file_res = session.get(dl_link, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=120)
-            if file_res.status_code == 200:
-                with open(file_path, "wb") as f:
-                    for chunk in file_res.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-
-                size_bytes = os.path.getsize(file_path)
-                size_mb = round(size_bytes / (1024 * 1024), 2)
-                
-                if size_bytes > 1500000: # معتبر و بالای ۱.۵ مگابایت
-                    return file_path, size_mb
+            logger.info(f"دانلود با جستجوی مستقیم: {fallback_query}")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(fallback_query, download=True)
+                if 'entries' in info and info['entries']:
+                    info = info['entries'][0]
+                out_name = ydl.prepare_filename(info)
+                if os.path.exists(out_name) and os.path.getsize(out_name) > 1000000:
+                    downloaded_file = out_name
         except Exception as e:
-            logger.error(f"خطا در دریافت استریم: {e}")
+            logger.error(f"خطا در سرچ فال‌بک: {e}")
+
+    if downloaded_file and os.path.exists(downloaded_file):
+        size_bytes = os.path.getsize(downloaded_file)
+        size_mb = round(size_bytes / (1024 * 1024), 2)
+        return downloaded_file, size_mb
 
     return None, 0
 
@@ -147,7 +175,7 @@ def download_exact_spotify_file(spotify_url: str, track_name: str, artist_name: 
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 ربات استخراج دقیق فایل اسپاتیفای آنلاین شد...")
+    logger.info("🚀 ربات هوشمند تطبیق دقیق اسپاتیفای آنلاین شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -166,19 +194,20 @@ def start_bot_polling():
                             logger.info("-" * 40)
                             track_name, artist_name = get_spotify_track_info(text)
 
-                            file_path, size_mb = download_exact_spotify_file(text, track_name, artist_name, chat_id)
+                            file_path, size_mb = download_exact_audio(text, track_name, artist_name, chat_id)
 
                             if file_path and size_mb > 0:
-                                send_message(chat_id, f"🔥 **فایلِ دقیق و اصلی دانلود شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال...")
+                                ext_name = os.path.splitext(file_path)[1].replace('.', '').upper()
+                                send_message(chat_id, f"🔥 **فایل صوتی اصلی ({ext_name}) دریافت شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به صورت سند...")
                                 success = send_document_file(
                                     chat_id,
                                     file_path,
-                                    f"🎼 **{artist_name} - {track_name}**\n💿 **سورس:** Exact Spotify Raw Stream\n📦 **حجم:** `{size_mb} MB`"
+                                    f"🎼 **{artist_name} - {track_name}**\n💿 **سورس:** Exact Spotify Stream ({ext_name})\n📦 **حجم:** `{size_mb} MB`"
                                 )
                                 if os.path.exists(file_path):
                                     os.remove(file_path)
                             else:
-                                send_message(chat_id, "❌ دریافت فایل از دیتابیس اسپاتیفای ناموفق بود.")
+                                send_message(chat_id, "❌ استخراج مستقیم فایل این ترَک با خطا مواجه شد.")
         except Exception as e:
             logger.error(f"خطای سیستم Polling: {e}")
             time.sleep(2)
