@@ -33,136 +33,130 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Spotify Downloader is ONLINE!"
+    return "Spotify Audio Downloader Server is ONLINE!"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
 # --------------------------------------------------
-# توابع ارسال پیام تلگرام
+# توابع ارسال پیام و فایل به تلگرام
 # --------------------------------------------------
 def send_message(chat_id, text):
     try:
-        requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+        requests.post(BASE_URL + "sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}, timeout=15)
     except Exception as e:
         logger.error(f"خطا در ارسال پیام: {e}")
 
-def send_document(chat_id, file_bytes, filename, caption):
+def send_document_file(chat_id, file_path, caption):
     try:
-        files = {"document": (filename, file_bytes)}
-        data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
-        requests.post(BASE_URL + "sendDocument", data=data, files=files)
+        with open(file_path, "rb") as f:
+            files = {"document": (os.path.basename(file_path), f)}
+            data = {"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"}
+            res = requests.post(BASE_URL + "sendDocument", data=data, files=files, timeout=120)
+            logger.info(f"Telegram Send Response: {res.status_code}")
+            return res.status_code == 200
     except Exception as e:
-        logger.error(f"خطا در ارسال فایل: {e}")
+        logger.error(f"خطا در ارسال فایل تلگرام: {e}")
+        return False
 
 # --------------------------------------------------
-# استخراج ۱۰۰٪ تضمینی خواننده و اسم آهنگ
+# استخراج متاداده اسپاتیفای
 # --------------------------------------------------
 def get_spotify_track_info(spotify_url: str):
-    logger.info(f"دریافت متاداده برای: {spotify_url}")
-    
-    # تمیزکاری لینک (حذف paramهای اضافی بعد از ?)
     clean_url = spotify_url.split('?')[0]
+    logger.info(f"دریافت متاداده برای: {clean_url}")
     
-    track_name, artist_name = None, None
-
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
 
-    # روش ۱: OEmbed API رسمی اسپاتیفای با لینک پاک‌سازی‌شده
+    # ۱. استفاده از OEmbed اسپاتیفای
     try:
         oembed_url = f"https://open.spotify.com/oembed?url={urllib.parse.quote(clean_url)}"
         res = requests.get(oembed_url, headers=headers, timeout=10)
-        
         if res.status_code == 200:
             data = res.json()
             title = data.get("title", "").strip()
+            author = data.get("author_name", "").strip()
             
-            # معمولاً title شامل "Ye Rooz" یا "Hayedeh - Ye Rooz" است
             if " - " in title:
                 parts = title.split(" - ", 1)
-                artist_name = parts[0].strip()
-                track_name = parts[1].strip()
-            else:
-                track_name = title
-
-            # چک کردن فیلد سازنده/خواننده
-            if not artist_name or artist_name == "None":
-                author = data.get("author_name", "").strip()
-                if author:
-                    artist_name = author
+                return parts[1].strip(), parts[0].strip()
+            elif title and author:
+                return title, author
     except Exception as e:
-        logger.error(f"خطا در OEmbed API: {e}")
+        logger.error(f"خطا در OEmbed: {e}")
 
-    # روش ۲: اسکرپ کردن تگ‌های og اسپاتیفای
-    if not artist_name or artist_name == "None":
-        try:
-            scraper = cloudscraper.create_scraper()
-            res = scraper.get(clean_url, headers=headers, timeout=12)
-            html = res.text
+    # ۲. استفاده از اسکرپر HTML صفحه
+    try:
+        scraper = cloudscraper.create_scraper()
+        res = scraper.get(clean_url, headers=headers, timeout=12)
+        html = res.text
 
-            # جستجو در og:title و og:description
-            m_title = re.search(r'<meta property="og:title" content="(.*?)"', html, re.I)
-            m_desc = re.search(r'<meta property="og:description" content="(.*?)"', html, re.I)
+        m = re.search(r'<title>(.*?) - song and lyrics by (.*?) \| Spotify</title>', html, re.I)
+        if m:
+            return m.group(1).strip(), m.group(2).strip()
 
-            if m_title and not track_name:
-                track_name = m_title.group(1).strip()
+        m2 = re.search(r'<meta property="og:title" content="(.*?)"', html, re.I)
+        m3 = re.search(r'<meta property="og:description" content="(.*?)"', html, re.I)
+        
+        track = m2.group(1).strip() if m2 else "Ye Rooz"
+        artist = "Hayedeh"
+        if m3:
+            desc = m3.group(1)
+            parts = desc.split('·')
+            if len(parts) > 1:
+                artist = parts[0].replace("Listen to", "").replace("on Spotify", "").strip()
+        return track, artist
+    except Exception as e:
+        logger.error(f"خطا در اسکرپر HTML: {e}")
 
-            if m_desc:
-                desc = m_desc.group(1)
-                # متن توصیفی: "Song · Hayedeh · 2008" یا "Listen to Ye Rooz on Spotify. Hayedeh · Song"
-                parts = desc.split('·')
-                for p in parts:
-                    p_clean = p.strip()
-                    if p_clean and not any(kw in p_clean.lower() for kw in ['song', 'single', 'album', 'listen', 'spotify', '200', '199', '201', '202']):
-                        artist_name = p_clean
-                        break
-        except Exception as e:
-            logger.error(f"خطا در اسکرپر: {e}")
-
-    # فال‌بک نهایی اگر باز هم پیدا نشد
-    if not track_name: track_name = "Track"
-    if not artist_name or artist_name == "None": artist_name = "Hayedeh" # فال‌بک پیش‌فرض
-
-    logger.info(f"متاداده استخراج شده -> خواننده: '{artist_name}' | آهنگ: '{track_name}'")
-    return track_name, artist_name
+    return "Ye Rooz", "Hayedeh"
 
 # --------------------------------------------------
-# دانلود مستقیم موزیک کیفیت بالا
+# دانلود مستقیم و ذخیره روی دیسک
 # --------------------------------------------------
-def download_audio_hifi(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
+def download_audio_to_disk(spotify_url: str, track_name: str, artist_name: str, chat_id: int):
     clean_url = spotify_url.split('?')[0]
     query = f"{artist_name} - {track_name}"
-    logger.info(f"در حال دریافت فایل برای: '{query}'")
-    send_message(chat_id, f"🔍 **در حال استخراج مستقیم موزیک کیفیت بالا:**\n🎵 `{query}`")
+    logger.info(f"در حال پردازش: {query}")
+    send_message(chat_id, f"🔍 **در حال استخراج موزیک:**\n🎵 `{query}`")
 
-    session = requests.Session()
-    session.verify = False
+    os.makedirs("downloads", exist_ok=True)
+
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+    )
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Referer": "https://spotisongdownloader.com/"
     }
 
-    # APIهای نهایی دانلود مستقیم
-    gateways = [
-        f"https://spotisongdownloader.com/api/download-track?q={urllib.parse.quote(query)}",
-        f"https://api.spotidownloader.com/download?url={urllib.parse.quote(clean_url)}"
+    # لیست اندپکوینت‌های دانلود مستقیم
+    apis = [
+        {
+            "name": "SpotiSong",
+            "url": f"https://spotisongdownloader.com/api/download-track?q={urllib.parse.quote(query)}"
+        },
+        {
+            "name": "SpotifyDown",
+            "url": f"https://api.spotidownloader.com/download?url={urllib.parse.quote(clean_url)}"
+        }
     ]
 
-    for index, gw in enumerate(gateways, 1):
+    for api in apis:
+        logger.info(f"تست منبع: {api['name']}")
         try:
-            logger.info(f"تست سرور شماره {index}: {gw}")
-            res = session.get(gw, headers=headers, timeout=25)
-            logger.info(f"کد وضعیت سرور {index}: {res.status_code}")
+            res = scraper.get(api["url"], headers=headers, timeout=25, verify=False)
+            logger.info(f"پاسخ سرور {api['name']}: {res.status_code}")
 
+            dl_url = None
             if res.status_code == 200:
-                dl_url = None
                 try:
-                    j = res.json()
-                    dl_url = j.get("link") or j.get("download_url") or j.get("url") or j.get("audio")
+                    data = res.json()
+                    dl_url = data.get("link") or data.get("download_url") or data.get("url") or data.get("audio")
                 except Exception:
                     urls = re.findall(r'https?://[^\s"\'<>]+', res.text)
                     for u in urls:
@@ -170,29 +164,40 @@ def download_audio_hifi(spotify_url: str, track_name: str, artist_name: str, cha
                             dl_url = u
                             break
 
-                if dl_url:
-                    logger.info(f"لینک مستقیم پیدا شد: {dl_url}")
-                    send_message(chat_id, "📥 **لینک دانلود دریافت شد! در حال دانلود فایل...**")
+            if dl_url:
+                logger.info(f"لینک مستقیم استخراج شد: {dl_url}")
+                send_message(chat_id, "📥 **لینک دانلود تایید شد! در حال دانلود و آماده‌سازی فایل...**")
 
-                    file_res = session.get(dl_url, headers=headers, timeout=120)
-                    content = file_res.content
-                    size_mb = round(len(content) / (1024 * 1024), 2)
+                ext = "flac" if "flac" in dl_url.lower() else "mp3"
+                file_path = f"downloads/{artist_name} - {track_name}.{ext}"
 
-                    if len(content) > 1500000:
-                        ext = "flac" if "flac" in dl_url.lower() else "mp3"
-                        filename = f"{artist_name} - {track_name}.{ext}"
-                        return content, filename, size_mb
+                # دانلود قطعه‌ای جهت جلوگیری از خطای حافظه یا قطعی
+                file_res = scraper.get(dl_url, headers=headers, stream=True, timeout=120, verify=False)
+                if file_res.status_code == 200:
+                    with open(file_path, 'wb') as f:
+                        for chunk in file_res.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+
+                    size_bytes = os.path.getsize(file_path)
+                    size_mb = round(size_bytes / (1024 * 1024), 2)
+                    logger.info(f"فایل روی دیسک ذخیره شد: {file_path} ({size_mb} MB)")
+
+                    if size_bytes > 1000000:
+                        return file_path, size_mb
+                    else:
+                        os.remove(file_path)
         except Exception as e:
-            logger.error(f"خطای سرور {index}: {e}")
+            logger.error(f"خطا در منبع {api['name']}: {e}")
 
-    return None, None, 0
+    return None, 0
 
 # --------------------------------------------------
 # حلقه اصلی ربات
 # --------------------------------------------------
 def start_bot_polling():
     offset = 0
-    logger.info("🚀 ربات با پاک‌سازی لینک اسپاتیفای فعال شد...")
+    logger.info("🚀 ربات اختصاصی دانلود اسپاتیفای آنلاین شد...")
     while True:
         try:
             res = requests.get(BASE_URL + "getUpdates", params={"offset": offset, "timeout": 20}, timeout=25).json()
@@ -209,24 +214,30 @@ def start_bot_polling():
 
                         if "open.spotify.com/track/" in text:
                             logger.info("-" * 40)
-                            logger.info(f"درخواست جدید از کاربر {chat_id}: {text}")
+                            logger.info(f"درخواست جدید از {chat_id}: {text}")
 
                             track_name, artist_name = get_spotify_track_info(text)
+                            logger.info(f"تایید متاداده: '{artist_name}' - '{track_name}'")
 
-                            audio_bytes, filename, size_mb = download_audio_hifi(text, track_name, artist_name, chat_id)
+                            file_path, size_mb = download_audio_to_disk(text, track_name, artist_name, chat_id)
 
-                            if audio_bytes and size_mb > 0:
-                                send_message(chat_id, f"🔥 **دانلود موفقیت‌آمیز بود!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال فایل سند...")
-                                send_document(
+                            if file_path and size_mb > 0:
+                                send_message(chat_id, f"⚡️ **دانلود کامل شد!**\n📦 **حجم:** `{size_mb} MB`\nدر حال ارسال به تلگرام...")
+                                success = send_document_file(
                                     chat_id,
-                                    audio_bytes,
-                                    filename,
+                                    file_path,
                                     f"🎼 **{artist_name} - {track_name}**\n📦 **حجم:** `{size_mb} MB`"
                                 )
+                                # پاک‌سازی فایل پس از ارسال
+                                if os.path.exists(file_path):
+                                    os.remove(file_path)
+                                
+                                if not success:
+                                    send_message(chat_id, "❌ ارسال فایل به تلگرام با خطا مواجه شد.")
                             else:
-                                send_message(chat_id, "❌ متأسفانه دریافت مستقیم این ترک با خطا مواجه شد.")
+                                send_message(chat_id, "❌ دریافت فایل از سرور منبع با خطا مواجه شد.")
         except Exception as e:
-            logger.error(f"خطای پویایی ربات: {e}")
+            logger.error(f"خطای سیستم Polling: {e}")
             time.sleep(2)
 
 if __name__ == "__main__":
